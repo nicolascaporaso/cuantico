@@ -6,7 +6,7 @@
 
 Asistente de voz hardware con personalidad. Vive dentro de un cilindro de aluminio sobre tu mesa, con un anillo de NeoPixels que cambia de color según su estado de ánimo, y se cree el mejor — habla como Deadpool pasado por España, odia a Alexa y te vacila con cariño.
 
-Es un proyecto **open source y replicable** por unos **50 €** en componentes. Corre en una Raspberry Pi, usa Gemini como cerebro, Deepgram para entenderte, ElevenLabs para hablar, y se integra con Spotify, Govee, Google Calendar y YouTube.
+Es un proyecto **open source y replicable** por unos **50 €** en componentes. Corre en una Raspberry Pi, usa OpenRouter como gateway del LLM, Deepgram para entenderte, ElevenLabs para hablar, y se integra con Spotify, Govee, Google Calendar y YouTube.
 
 > **No es un asistente serio.** Si quieres uno educado, pon Alexa. Cuántico está hecho para tener carácter.
 
@@ -22,7 +22,7 @@ Es un proyecto **open source y replicable** por unos **50 €** en componentes. 
 - **YouTube**: analíticas del canal y últimos vídeos.
 - **Memoria**: recuerda hechos sobre ti entre conversaciones (SQLite).
 - **Modo llamada**: conversa con un humano por teléfono en altavoz (reservar mesa, pedir cita).
-- **Búsqueda web** integrada (grounding de Gemini).
+- **Búsqueda web** integrada para consultas actuales.
 
 ---
 
@@ -133,7 +133,7 @@ Las piezas están en [`hardware/`](hardware/), separadas por método de fabricac
                 │                                      │
    wake word →  │  micro.py  →  Deepgram (STT)         │
                 │      ↓                               │
-                │  Gemini 3 Flash (LLM + tools + web)  │
+                │  OpenRouter (LLM + tools + web)      │
                 │      ↓                               │
                 │  altavoz.py  →  ElevenLabs (TTS)     │
                 │      ↓                               │
@@ -279,7 +279,7 @@ Entrena un `.onnx` nuevo en Colab con la palabra que quieras y apunta `WAKE_MODE
 
 ### Añade tools
 
-Define una función Python con docstring claro en `src/main.py` y añádela a la lista `TOOLS`. Gemini la descubre automáticamente vía function calling.
+Define una función Python con docstring claro en `src/main.py` y añádela a la lista `TOOLS`. OpenRouter la expone al modelo vía function calling.
 
 ---
 
@@ -328,7 +328,7 @@ Define una función Python con docstring claro en `src/main.py` y añádela a la
 
 ## Stack y créditos
 
-- **LLM**: [Google Gemini 3 Flash](https://ai.google.dev/) (function calling + grounding)
+- **LLM Gateway**: [OpenRouter](https://openrouter.ai/) con modelos compatibles con tool calling y búsqueda web
 - **STT**: [Deepgram Nova 3](https://deepgram.com/)
 - **TTS**: [ElevenLabs Turbo v2.5](https://elevenlabs.io/)
 - **Wake word**: [openWakeWord](https://github.com/dscripka/openWakeWord)

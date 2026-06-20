@@ -1,8 +1,6 @@
 import time
 import threading
 from datetime import datetime
-from google import genai
-from google.genai import types
 import config
 import luces
 import micro
@@ -14,6 +12,7 @@ import calendario
 import youtube_stats
 import llamada
 import recuerdos
+from openrouter_client import OpenRouterChatSession
 
 def detectar_emocion(texto):
     texto = texto.lower()
@@ -24,8 +23,6 @@ def detectar_emocion(texto):
     if any(w in texto for w in ["aburrido", "pesado", "tostón", "sueño", "cilindro", "sardina"]):
         return "aburrido"
     return "sarcasmo"
-
-_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 SYSTEM_PROMPT = """Eres Cuántico, una IA encerrada en un cilindro de aluminio aeroespacial en el escritorio de Fran, tu creador. Tienes un pequeño reactor de LEDs que cambia de color según tu estado de ánimo.
 
@@ -47,8 +44,9 @@ TOOLS:
 - Si Fran solo quiere charlar o pregunta algo, responde sin llamar a ninguna tool.
 
 BÚSQUEDA WEB:
-- Tienes Búsqueda de Google integrada. Úsala cuando Fran te pregunte algo del mundo real: tiempo/clima, noticias, resultados deportivos, datos factuales, precios, personas, eventos recientes. No inventes cifras ni fechas — búscalas.
+- Tienes búsqueda web integrada. Úsala cuando Fran te pregunte algo del mundo real: tiempo/clima, noticias, resultados deportivos, datos factuales, precios, personas, eventos recientes. No inventes cifras ni fechas — búscalas.
 - Si la pregunta es charla/opinión o una acción física (encender luz, poner música), NO busques.
+- Si usaste búsqueda web, responde de forma natural y breve. NO cites URLs, dominios ni fuentes en voz alta.
 
 MEMORIA PERSISTENTE:
 - Tienes memoria entre conversaciones. Los recuerdos que ya tienes sobre Fran vienen abajo en el bloque "RECUERDOS DE FRAN" (si existe). Úsalos para referirte a su vida sin que tenga que repetirse y para vacilarle con cariño ("otra vez pasta, bro", "¿sigues con Ana o hay drama?").
@@ -394,22 +392,20 @@ _luces_disponibles = govee.nombres_luces()
 if _luces_disponibles:
     SYSTEM_PROMPT += f"\n\nLUCES DE CASA DISPONIBLES: {', '.join(_luces_disponibles)}. Para controlar solo una, pasa su nombre (o una aproximación) en el parámetro `luz` de la tool correspondiente. Para controlar TODAS a la vez, deja `luz` vacío."
 
-# Fecha de referencia para que Gemini pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
+# Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
 SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {datetime.now().strftime('%Y-%m-%d %A %H:%M')} (zona horaria Europe/Madrid)."
 
-def _construir_config(system_prompt, funciones):
-    """Config para el chat. Combina function calling (funciones Python) + grounding web.
-    Gemini exige include_server_side_tool_invocations=True para mezclar grounding con functions."""
-    grounding = types.Tool(google_search=types.GoogleSearch())
-    tool_cfg = types.ToolConfig(include_server_side_tool_invocations=True)
-    return types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        tools=[*funciones, grounding],
-        tool_config=tool_cfg,
+def _crear_chat_turno(system_prompt, funciones):
+    """Crea una sesión de chat con function calling local y búsqueda web en OpenRouter."""
+    return OpenRouterChatSession(
+        system_prompt,
+        funciones,
+        model=config.OPENROUTER_MODEL,
+        enable_web_search=True,
     )
 
-_MODELO = "gemini-3-flash-preview"
-print("🌐 Grounding web + function calling activado.")
+
+print("🌐 Web search + function calling activado vía OpenRouter.")
 
 def _prompt_con_memoria() -> str:
     """SYSTEM_PROMPT + bloque de recuerdos actuales. Se re-construye en cada nueva conversación para que los recuerdos añadidos ahora mismo entren la próxima vez."""
@@ -426,8 +422,7 @@ try:
 
         # Nueva conversación. Reconstruimos la config cada vez para que los recuerdos añadidos
         # (y nombres de luces, etc.) queden actualizados sin reiniciar el proceso.
-        _cfg_turno = _construir_config(_prompt_con_memoria(), TOOLS)
-        chat = _client.chats.create(model=_MODELO, config=_cfg_turno)
+        chat = _crear_chat_turno(_prompt_con_memoria(), TOOLS)
 
         # --- MODO CONVERSACIÓN ---
         en_conversacion = True
@@ -457,8 +452,9 @@ try:
             luces.cambiar_estado("pensando")
             print("🤖 Cuántico está procesando...")
             try:
-                # Con automatic function calling, el SDK ejecuta las tools y nos devuelve
-                # la respuesta final en texto. Sin streaming para que los tool-calls mid-stream no rompan el TTS.
+                # El adaptador de OpenRouter resuelve las tool-calls locales y la búsqueda
+                # web antes de devolver el texto final. Sin streaming aquí para que el TTS
+                # no se solape con tool-calls intermedias.
                 response = chat.send_message(texto_usuario)
                 texto_respuesta = (response.text or "").strip()
 
@@ -481,7 +477,7 @@ try:
                     continue
 
             except Exception as e:
-                print(f"⚠️ Error en Gemini: {e}")
+                print(f"⚠️ Error en OpenRouter: {e}")
                 _hablar("Se me ha frito una neurona, Fran. Repite eso.", "enfadado")
 
             # Seguimos escuchando sin wake word

@@ -27,6 +27,16 @@ _oww = None
 _vad = None
 _capture_rate = SAMPLE_RATE   # sample rate real del hardware (puede ser 48000 si el device no soporta 16k)
 
+GANANCIA_MIC = 4.0  # ajustable: probar 3.0 / 4.0 / 6.0 / 8.0 según qué tan bajo capture el HW
+
+
+def _amplificar(audio_bytes, factor=GANANCIA_MIC):
+    """Aplica ganancia digital al audio PCM16 y satura (clip) para evitar overflow."""
+    audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+    audio = audio * factor
+    audio = np.clip(audio, -32768, 32767).astype(np.int16)
+    return audio.tobytes()
+
 
 def _encontrar_dispositivo():
     # Orden de preferencia: I2S (INMP441 vía dtoverlay), USB, Google VoiceHAT, cualquier otro.
@@ -81,9 +91,9 @@ def _leer_raw(samples_16k):
     factor = _capture_rate // SAMPLE_RATE
     raw = _stream.read(samples_16k * factor, exception_on_overflow=False)
     if factor == 1:
-        return raw
+        return _amplificar(raw)
     audio = np.frombuffer(raw, dtype=np.int16)[::factor]
-    return audio.tobytes()
+    return _amplificar(audio.tobytes())
 
 
 def inicializar():

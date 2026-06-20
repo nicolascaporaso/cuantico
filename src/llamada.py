@@ -15,14 +15,11 @@ Decisiones:
 - El marcador `[FIN_LLAMADA]` lo genera el modelo al despedirse; se elimina del TTS.
 """
 import time
-from google import genai
-from google.genai import types
 
 import config
 import micro
 import luces
-
-_client = genai.Client(api_key=config.GEMINI_API_KEY)
+from openrouter_client import OpenRouterChatSession
 
 FIN_MARKER = "[FIN_LLAMADA]"
 TIMEOUT_TOTAL_S = 180
@@ -58,13 +55,13 @@ ARRANQUE DE LA LLAMADA:
 
 
 def _filtrar_fin(chunks, estado):
-    """Reemite chunks de texto de Gemini quitando el marcador [FIN_LLAMADA].
+    """Reemite chunks de texto quitando el marcador [FIN_LLAMADA].
     Mantiene un buffer de cola para que el marcador partido entre chunks se detecte igual.
     `estado["terminar"]` queda a True si se vio el marcador; `estado["texto"]` acumula todo para log."""
     buffer = ""
     hold = len(FIN_MARKER) - 1  # chars retenidos por si el marcador está partido al final
     for chunk in chunks:
-        t = getattr(chunk, "text", None) or ""
+        t = chunk if isinstance(chunk, str) else (getattr(chunk, "text", None) or "")
         if not t:
             continue
         estado["texto"] += t
@@ -95,18 +92,17 @@ def ejecutar(objetivo: str, hablar_fn, hablar_stream_fn=None):
     """Corre el loop de llamada. Bloquea hasta que termine.
 
     `hablar_fn(texto, emocion)` se usa para frases cortas de sistema (errores).
-    `hablar_stream_fn(generador, emocion)` se usa para las respuestas de Gemini en streaming."""
+    `hablar_stream_fn(generador, emocion)` se usa para las respuestas del modelo en streaming."""
     print(f"📞 === MODO LLAMADA ACTIVADO ===")
     print(f"📞 Objetivo: {objetivo}")
 
     system = SYSTEM_PROMPT_LLAMADA.format(objetivo=objetivo, fin=FIN_MARKER)
-    grounding = types.Tool(google_search=types.GoogleSearch())
-    cfg = types.GenerateContentConfig(
-        system_instruction=system,
-        tools=[grounding],
-        tool_config=types.ToolConfig(include_server_side_tool_invocations=True),
+    chat = OpenRouterChatSession(
+        system,
+        [],
+        model=config.OPENROUTER_CALL_MODEL,
+        enable_web_search=True,
     )
-    chat = _client.chats.create(model="gemini-3-flash-preview", config=cfg)
 
     # Cuántico NO saluda primero. Espera a que el camarero descuelgue y hable.
     # Tampoco interrumpe con "¿sigues ahí?": escucha en silencio hasta que el humano hable
@@ -137,11 +133,11 @@ def ejecutar(objetivo: str, hablar_fn, hablar_stream_fn=None):
             break
 
         luces.cambiar_estado("pensando")
-        print("📞 ↗ Enviando a Gemini (stream)…")
+        print("📞 ↗ Enviando a OpenRouter (stream)…")
         try:
             stream = chat.send_message_stream(texto_humano)
         except Exception as e:
-            print(f"⚠️ Modo llamada: fallo Gemini ({e}). Continuamos.")
+            print(f"⚠️ Modo llamada: fallo OpenRouter ({e}). Continuamos.")
             hablar_fn("Perdón, ¿puede repetirlo?", "sarcasmo")
             continue
 
