@@ -1,0 +1,16 @@
+python-dotenv
+google-genai
+requests
+spotipy
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+# Audio
+pyaudio
+webrtcvad
+numpy
+openwakeword
+# GPIO / NeoPixel (sólo Pi)
+adafruit-circuitpython-neopixel
+rpi_ws281x

@@ -1,0 +1,24 @@
+# --- Secrets ---
+.env
+.spotify_cache
+
+# --- Estado persistente (tokens OAuth, base de recuerdos, timers) ---
+state/
+*.db
+
+# --- Workspace local del usuario ---
+*.code-workspace
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.venv-*/
+
+# --- Sistema ---
+.DS_Store
+**/.DS_Store
+*.log
