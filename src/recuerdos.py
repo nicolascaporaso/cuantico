@@ -1,12 +1,12 @@
-"""Memoria persistente de Cuántico: hechos sobre Fran, su vida y su entorno.
+"""Memoria persistente de Cuántico: hechos sobre nico, su vida y su entorno.
 
 SQLite en state/recuerdos.db. Al arrancar cada conversación nueva, todos los
-recuerdos se inyectan en el SYSTEM_PROMPT como un bloque "RECUERDOS DE FRAN"
+recuerdos se inyectan en el SYSTEM_PROMPT como un bloque "RECUERDOS DE nico"
 para que Gemini pueda vacilar con cosas de ayer, mencionar a personas por
-nombre sin que Fran repita, acordarse de gustos, etc.
+nombre sin que nico repita, acordarse de gustos, etc.
 
 No es un chat history — son HECHOS ATEMPORALES. Cuántico decide qué merece
-guardarse a través de la tool `recordar`. Fran puede pedir borrar con `olvidar`.
+guardarse a través de la tool `recordar`. nico puede pedir borrar con `olvidar`.
 """
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ def formatear_para_prompt(limite: int = 80) -> str:
     for r in items:
         cat = f" [{r['categoria']}]" if r["categoria"] else ""
         lineas.append(f"- {r['texto']}{cat}")
-    return "RECUERDOS DE FRAN (cosas que ya sabes de él de conversaciones anteriores; úsalas para vacilarle con cariño y referirte a su vida sin que tenga que repetir):\n" + "\n".join(lineas)
+    return "RECUERDOS DE nico (cosas que ya sabes de él de conversaciones anteriores; úsalas para vacilarle con cariño y referirte a su vida sin que tenga que repetir):\n" + "\n".join(lineas)
 
 
 def cerrar():

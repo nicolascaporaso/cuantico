@@ -1,11 +1,51 @@
 import requests
 import subprocess
+from pathlib import Path
+import RPi.GPIO as GPIO
 import luces
 import config
 
 ELEVENLABS_API_KEY = config.ELEVENLABS_API_KEY
 VOICE_ID = config.ELEVENLABS_VOICE_ID
 TTS_MODEL = "eleven_turbo_v2_5"  # ~250ms TTFB, calidad cercana al multilingual
+STARTUP_WAV_PATH = Path(__file__).resolve().parent.parent / "test.wav"
+# La VoiceHAT expone mejor compatibilidad por `plughw`, porque ALSA convierte
+# el formato/rate del audio antes de mandarlo al hardware I2S.
+ALSA_PLAYBACK_DEVICE = "plughw:0,0"
+# Pon esto a False si en el futuro quieres desactivar el WAV de arranque.
+ENABLE_STARTUP_WAV = True
+
+# La Google VoiceHAT muta el ampli por hardware vía GPIO16 para evitar que el
+# parlante retroalimente al micro mientras el sistema escucha. Hay que
+# desmutear antes de reproducir y volver a mutear al terminar.
+PIN_MUTE_SPEAKER = 16
+_gpio_listo = False
+
+
+def _asegurar_gpio():
+    global _gpio_listo
+    if _gpio_listo:
+        return
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    GPIO.setup(PIN_MUTE_SPEAKER, GPIO.OUT)
+    GPIO.output(PIN_MUTE_SPEAKER, GPIO.LOW)  # arranca muteado
+    _gpio_listo = True
+
+
+def _desmutear():
+    _asegurar_gpio()
+    GPIO.output(PIN_MUTE_SPEAKER, GPIO.HIGH)
+
+
+def _mutear():
+    _asegurar_gpio()
+    GPIO.output(PIN_MUTE_SPEAKER, GPIO.LOW)
+
+
+def _aplay_cmd():
+    """Centraliza el device ALSA para no repetirlo en cada reproducción."""
+    return ["aplay", "-q", "-D", ALSA_PLAYBACK_DEVICE]
 
 
 def _lanzar_mpg123():
@@ -27,7 +67,7 @@ def _lanzar_mpg123():
         stderr=subprocess.DEVNULL,
     )
     aplay_proc = subprocess.Popen(
-        ["aplay", "-q", "-D", "default"],
+        _aplay_cmd(),
         stdin=sox_proc.stdout,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -82,10 +122,47 @@ def _encontrar_corte(buffer):
     return min(candidatos) if candidatos else -1
 
 
+def reproducir_wav_directo(ruta: str | Path, emocion: str | None = None) -> bool:
+    """Reproduce un WAV local directamente por ALSA, sin pasar por TTS."""
+    wav_path = Path(ruta)
+    if not wav_path.exists():
+        print(f"⚠️ WAV no encontrado: {wav_path}")
+        return False
+
+    if emocion:
+        luces.cambiar_estado(emocion)
+
+    print(f"🔊 [Altavoz] Reproduciendo WAV directo: {wav_path.name}")
+    _desmutear()
+    try:
+        subprocess.run(
+            [*_aplay_cmd(), str(wav_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception as e:
+        print(
+            f"⚠️ No se pudo reproducir {wav_path.name} en {ALSA_PLAYBACK_DEVICE}: {e}"
+        )
+        return False
+    finally:
+        _mutear()
+
+
+def reproducir_sonido_arranque() -> bool:
+    """Dispara el WAV de prueba una sola vez al arrancar el proceso."""
+    if not ENABLE_STARTUP_WAV:
+        return False
+    return reproducir_wav_directo(STARTUP_WAV_PATH, emocion="cachondeo")
+
+
 def hablar(texto, emocion):
     """Reproduce un texto completo (sin streaming de generación)."""
     luces.cambiar_estado(emocion)
     print(f"🔊 [Altavoz] Escupiendo audio ({emocion})...")
+    _desmutear()
     proceso = _lanzar_mpg123()
     try:
         _tts_a_tuberia(texto, proceso.stdin)
@@ -95,6 +172,7 @@ def hablar(texto, emocion):
         except Exception:
             pass
         proceso.wait()
+        _mutear()
 
 
 def hablar_stream(generador_texto, emocion="sarcasmo"):
@@ -105,6 +183,7 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
     """
     luces.cambiar_estado(emocion)
     print(f"🔊 [Altavoz] Streaming paralelo ({emocion})...")
+    _desmutear()
     proceso = _lanzar_mpg123()
     buffer = ""
     try:
@@ -129,3 +208,4 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
         except Exception:
             pass
         proceso.wait()
+        _mutear()

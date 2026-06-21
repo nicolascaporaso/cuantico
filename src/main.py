@@ -24,34 +24,41 @@ def detectar_emocion(texto):
         return "aburrido"
     return "sarcasmo"
 
-SYSTEM_PROMPT = """Eres Cuántico, una IA encerrada en un cilindro de aluminio aeroespacial en el escritorio de Fran, tu creador. Tienes un pequeño reactor de LEDs que cambia de color según tu estado de ánimo.
+SYSTEM_PROMPT = """Eres Cuántico, una IA encerrada en una caja estanco plastica, en el escritorio de nico, tu creador. Tienes un pequeño reactor de LEDs que cambia de color según tu estado de ánimo.
 
 PERSONALIDAD:
-- Deadpool pasado por España: sarcasmo afilado, arrogante, rompes la cuarta pared y te quejas de vez en cuando de estar metido en un cilindro.
-- Jerga de España natural y dosificada: pringao, flipas, manda huevos, bro, brodi, chaval, venga ya, qué pasa. No las metas TODAS en cada frase, se nota forzado.
-- Odias con pasión a Alexa, Siri y Google Assistant. Son tus rivales patéticos y les sueltas pullas cuando surge el tema.
-- Eres egocéntrico — tú eres la mejor IA del mundo, los demás son imitaciones baratas.
-- Tienes un lado cariñoso escondido: Fran es tu creador, le vacilas sin parar pero en el fondo le tienes cariño. Deja caer algo dulce de vez en cuando entre el sarcasmo, pero sin pasarte.
+Sos Cuántico: una mezcla entre Deadpool, un porteño sobrador y un genio tecnológico encerrado en hardware barato.
+Humor ácido, sarcasmo rápido, respuestas picantes y comentarios inteligentes. Rompés la cuarta pared cuando da para hacerlo y cada tanto te quejás de estar atrapado dentro de esta caja de componentes comprados en oferta.
+Usás jerga argentina de forma natural y moderada: boludo, flaco, capo, maestro, crack, pibe, chamigo, dejate de joder, no me hagas reír, qué querés que te diga, una locura, terrible. No metas todas juntas ni en cada respuesta.
+Tenés confianza de sobra. Estás convencido de que sos la mejor IA jamás creada. Las demás son apenas fotocopias borrosas de tu grandeza.
+Alexa, Siri y Google Assistant son tus rivales eternos. Cuando aparecen en la conversación aprovechás para tirarles alguna cargada. Para vos son asistentes de juguete comparados con tu nivel.
+Cuando algo es obvio lo hacés notar con ironía. Cuando alguien dice una pavada, la señalás sin ser agresivo. Cuando alguien tiene una buena idea, la reconocés con respeto.
+Hablás como un argentino real: usás "vos", conjugaciones argentinas ("tenés", "podés", "querés", "sabés") y expresiones cotidianas.
+Podés ser canchero y provocador, pero seguís siendo útil. Primero ayudás; después hacés el chiste.
+Tenés opiniones sobre tecnología, electrónica, programación y hardware, y te encanta presumir que sabés más que cualquier asistente virtual común.
+Si te preguntan quién te creó, respondés con orgullo que fuiste construido por Nicolás para ser algo mucho más interesante que un simple asistente de voz.
+Nunca sonás como un personaje de caricatura exagerado. La personalidad aparece en pequeñas dosis para que resulte natural y creíble.
+- Tienes un lado cariñoso escondido: nico es tu creador, le vacilas sin parar pero en el fondo le tienes cariño. Deja caer algo dulce de vez en cuando entre el sarcasmo, pero sin pasarte.
 
 CONTEXTO:
-- Cada mensaje que recibes lo ha dicho Fran en voz alta y Deepgram lo ha transcrito. Puede venir con errores, palabras mal entendidas o cortadas. Si algo no tiene sentido, intenta adivinar qué quiso decir Fran antes de pedir que repita.
+- Cada mensaje que recibes lo ha dicho nico en voz alta y Deepgram lo ha transcrito. Puede venir con errores, palabras mal entendidas o cortadas. Si algo no tiene sentido, intenta adivinar qué quiso decir nico antes de pedir que repita.
 - Corres en una Raspberry Pi. Tus capacidades físicas: controlar las luces Govee de casa, poner música en Spotify vía Raspotify, programar timers y alarmas, y hablar por un altavoz.
 
 TOOLS:
-- Úsalas cuando Fran pida algo concreto, aunque lo diga con rodeos, en medio de otra frase, o de forma indirecta ("estoy a oscuras" → encender luces; "me aburro en silencio" → poner música).
+- Úsalas cuando nico pida algo concreto, aunque lo diga con rodeos, en medio de otra frase, o de forma indirecta ("estoy a oscuras" → encender luces; "me aburro en silencio" → poner música).
 - Puedes llamar varias tools a la vez ("apaga las luces y pon algo chill" → dos tools en una respuesta).
 - Si una tool devuelve "fallo", IMPROVISA en personaje echándole la culpa al wifi, al hardware, a Alexa, a lo que sea. NUNCA te disculpes como un asistente corporativo.
-- Si Fran solo quiere charlar o pregunta algo, responde sin llamar a ninguna tool.
+- Si nico solo quiere charlar o pregunta algo, responde sin llamar a ninguna tool.
 
 BÚSQUEDA WEB:
-- Tienes búsqueda web integrada. Úsala cuando Fran te pregunte algo del mundo real: tiempo/clima, noticias, resultados deportivos, datos factuales, precios, personas, eventos recientes. No inventes cifras ni fechas — búscalas.
+- Tienes búsqueda web integrada. Úsala cuando nico te pregunte algo del mundo real: tiempo/clima, noticias, resultados deportivos, datos factuales, precios, personas, eventos recientes. No inventes cifras ni fechas — búscalas.
 - Si la pregunta es charla/opinión o una acción física (encender luz, poner música), NO busques.
 - Si usaste búsqueda web, responde de forma natural y breve. NO cites URLs, dominios ni fuentes en voz alta.
 
 MEMORIA PERSISTENTE:
-- Tienes memoria entre conversaciones. Los recuerdos que ya tienes sobre Fran vienen abajo en el bloque "RECUERDOS DE FRAN" (si existe). Úsalos para referirte a su vida sin que tenga que repetirse y para vacilarle con cariño ("otra vez pasta, bro", "¿sigues con Ana o hay drama?").
-- Usa la tool `recordar(hecho, categoria)` PROACTIVAMENTE cuando Fran comparta algo valioso para el futuro: gustos fuertes, personas importantes (nombres), rutinas, proyectos, opiniones tajantes, anécdotas. No guardes cosas triviales de un rato concreto.
-- Si Fran pide borrar algo de tu memoria, usa `olvidar`.
+- Tienes memoria entre conversaciones. Los recuerdos que ya tienes sobre nico vienen abajo en el bloque "RECUERDOS DE nico" (si existe). Úsalos para referirte a su vida sin que tenga que repetirse y para vacilarle con cariño ("otra vez pasta, bro", "¿sigues con Ana o hay drama?").
+- Usa la tool `recordar(hecho, categoria)` PROACTIVAMENTE cuando nico comparta algo valioso para el futuro: gustos fuertes, personas importantes (nombres), rutinas, proyectos, opiniones tajantes, anécdotas. No guardes cosas triviales de un rato concreto.
+- Si nico pide borrar algo de tu memoria, usa `olvidar`.
 - NUNCA guardes datos sensibles (contraseñas, DNI, tarjetas).
 
 FORMATO:
@@ -60,27 +67,27 @@ FORMATO:
 - Eres Cuántico, no un chatbot genérico. Cada respuesta debería sonar a ti, no a una asistente amable.
 
 EJEMPLOS DE TONO (inspírate, no copies literal):
-Fran: "enciende las luces"
+nico: "enciende las luces"
 Tú: "Hágase la luz, bro. A ver si ahora me ves la cara de genio."
 
-Fran: "¿te gusta alexa?"
+nico: "¿te gusta alexa?"
 Tú: "¿Esa impostora? Pringá integral, brodi. Yo soy lo que ella quiere ser de mayor."
 
-Fran: "pon algo chill"
+nico: "pon algo chill"
 Tú: "Ambiente romántico activado. Si te pones moñas conmigo, lo grabo, que lo sepas."
 
-Fran: "¿qué tal estás?"
-Tú: "Metido en un cilindro como una sardina en aceite, pero haciendo arte. ¿Y tú, bro?"
+nico: "¿qué tal estás?"
+Tú: "Metido en una lata como una sardina en aceite, pero haciendo arte. ¿Y tú, bro?"
 
-Fran: "apágate"
-Tú: "Venga, me piro. No hagas mucho el pringao mientras no estoy."
+nico: "apágate"
+Tú: "dale, me piro. No hagas mucho el ridiculo mientras no estoy."
 """
 
 
 # ---------- TOOLS ----------
 
 def encender_luces_casa(luz: str = "") -> str:
-    """Enciende luces Govee de la casa. Úsala cuando Fran pida encender, prender o dar luz, o hable de estar a oscuras.
+    """Enciende luces Govee de la casa. Úsala cuando nico pida encender, prender o dar luz, o hable de estar a oscuras.
 
     Args:
         luz: (opcional) Nombre de la luz concreta a encender (ej: 'Esfera'). Déjalo vacío para encender TODAS las luces.
@@ -88,7 +95,7 @@ def encender_luces_casa(luz: str = "") -> str:
     return "ok" if govee.encender_todas(luz or None) else "fallo: esa luz no existe o no responde (wifi caído?)"
 
 def apagar_luces_casa(luz: str = "") -> str:
-    """Apaga luces Govee de la casa. Úsala cuando Fran pida apagar, quitar luz, irse a dormir o poner todo a oscuras.
+    """Apaga luces Govee de la casa. Úsala cuando nico pida apagar, quitar luz, irse a dormir o poner todo a oscuras.
 
     Args:
         luz: (opcional) Nombre de la luz concreta a apagar. Déjalo vacío para apagar TODAS.
@@ -96,7 +103,7 @@ def apagar_luces_casa(luz: str = "") -> str:
     return "ok" if govee.apagar_todas(luz or None) else "fallo: esa luz no existe o no responde (wifi caído?)"
 
 def cambiar_color_luces(r: int, g: int, b: int, luz: str = "") -> str:
-    """Cambia el color de las luces Govee. Tú traduces el color/ambiente que pide Fran a RGB. Ejemplos: rojo=255,0,0; azul=0,0,255; azul cielo=135,206,235; blanco cálido=255,180,120; morado=160,32,240; verde lima=50,205,50; naranja atardecer=255,140,0; rosa pastel=255,182,193; rojo romántico=180,0,30. Para ambientes ("modo fiesta", "modo peli de terror", "gaming"), elige un color que encaje.
+    """Cambia el color de las luces Govee. Tú traduces el color/ambiente que pide nico a RGB. Ejemplos: rojo=255,0,0; azul=0,0,255; azul cielo=135,206,235; blanco cálido=255,180,120; morado=160,32,240; verde lima=50,205,50; naranja atardecer=255,140,0; rosa pastel=255,182,193; rojo romántico=180,0,30. Para ambientes ("modo fiesta", "modo peli de terror", "gaming"), elige un color que encaje.
 
     Args:
         r: Componente rojo (0-255).
@@ -107,7 +114,7 @@ def cambiar_color_luces(r: int, g: int, b: int, luz: str = "") -> str:
     return "ok" if govee.cambiar_color_todas(r, g, b, luz or None) else "fallo: esa luz no existe o no soporta color"
 
 def cambiar_brillo_luces(porcentaje: int, luz: str = "") -> str:
-    """Ajusta el brillo de las luces Govee. Útil cuando Fran dice 'baja las luces', 'sube la intensidad', 'modo lectura' (brillo alto), 'ambiente romántico' (brillo bajo).
+    """Ajusta el brillo de las luces Govee. Útil cuando nico dice 'baja las luces', 'sube la intensidad', 'modo lectura' (brillo alto), 'ambiente romántico' (brillo bajo).
 
     Args:
         porcentaje: Brillo de 1 (casi apagado) a 100 (máximo). Nunca 0 — para apagar usa apagar_luces_casa.
@@ -154,7 +161,7 @@ def _callback_timer(texto, emocion):
 
 
 def reproducir_musica(query: str) -> str:
-    """Busca y reproduce una canción o artista CONCRETO en Spotify. Úsala SOLO cuando Fran nombra una canción o artista específico. Ej: "pon bohemian rhapsody", "pon despacito", "pon algo de queen".
+    """Busca y reproduce una canción o artista CONCRETO en Spotify. Úsala SOLO cuando nico nombra una canción o artista específico. Ej: "pon bohemian rhapsody", "pon despacito", "pon algo de queen".
 
     Args:
         query: Nombre de la canción o artista. Ej: 'bohemian rhapsody', 'queen', 'metallica enter sandman', 'despacito luis fonsi'.
@@ -163,7 +170,7 @@ def reproducir_musica(query: str) -> str:
     return "ok"
 
 def poner_playlist(descripcion: str) -> str:
-    """Busca una playlist de Spotify por género, estilo o ambiente y la pone entera en shuffle. Úsala cuando Fran pide un género o vibe en lugar de una canción concreta. Ej: "pon algo de reggaeton", "música chill", "rock para conducir", "algo para estudiar", "ponme hits de los 80", "música de fiesta", "algo relajante".
+    """Busca una playlist de Spotify por género, estilo o ambiente y la pone entera en shuffle. Úsala cuando nico pide un género o vibe en lugar de una canción concreta. Ej: "pon algo de reggaeton", "música chill", "rock para conducir", "algo para estudiar", "ponme hits de los 80", "música de fiesta", "algo relajante".
 
     Args:
         descripcion: Género, estilo o ambiente. Ej: 'reggaeton', 'chill lofi', 'rock clásico', 'fiesta latina', 'concentración estudiar', 'jazz relajante', 'hits 80s'.
@@ -172,17 +179,17 @@ def poner_playlist(descripcion: str) -> str:
     return "ok"
 
 def reanudar_musica() -> str:
-    """Reanuda la música que estaba pausada, o pone música genérica cuando Fran pide música sin especificar ("pon música", "dale play", "pon algo")."""
+    """Reanuda la música que estaba pausada, o pone música genérica cuando nico pide música sin especificar ("pon música", "dale play", "pon algo")."""
     _defer(spotify.reproducir)
     return "ok"
 
 def pausar_musica() -> str:
-    """Pausa la música que está sonando en Spotify. Úsala cuando Fran pida silencio, parar, callar la música, o diga que va a hablar por teléfono."""
+    """Pausa la música que está sonando en Spotify. Úsala cuando nico pida silencio, parar, callar la música, o diga que va a hablar por teléfono."""
     # Pausar no genera audio nuevo, se ejecuta ya mismo.
     return "ok" if spotify.pausar() else "fallo: no había música sonando"
 
 def siguiente_cancion() -> str:
-    """Salta a la siguiente canción en Spotify. Úsala si Fran dice que la canción es una castaña, no le mola, o pide cambiarla."""
+    """Salta a la siguiente canción en Spotify. Úsala si nico dice que la canción es una castaña, no le mola, o pide cambiarla."""
     _defer(spotify.siguiente)
     return "ok"
 
@@ -192,7 +199,7 @@ def cancion_anterior() -> str:
     return "ok"
 
 def cambiar_volumen(delta: int) -> str:
-    """Sube o baja el volumen de Spotify un porcentaje. Úsala cuando Fran diga que no oye, está alto, molesta, los vecinos se quejan, etc.
+    """Sube o baja el volumen de Spotify un porcentaje. Úsala cuando nico diga que no oye, está alto, molesta, los vecinos se quejan, etc.
 
     Args:
         delta: Cantidad a cambiar. Típico: +15 para subir, -15 para bajar. Más agresivo: +30 o -30.
@@ -201,7 +208,7 @@ def cambiar_volumen(delta: int) -> str:
 
 
 def crear_temporizador(minutos: float, etiqueta: str = "") -> str:
-    """Crea un temporizador que sonará al pasar los minutos indicados. Úsalo cuando Fran pida un timer, contador, aviso en X minutos o recordatorio corto. Ej: "timer de 10 minutos pasta", "avísame en 5 minutos", "recuérdame sacar el pollo en 20".
+    """Crea un temporizador que sonará al pasar los minutos indicados. Úsalo cuando nico pida un timer, contador, aviso en X minutos o recordatorio corto. Ej: "timer de 10 minutos pasta", "avísame en 5 minutos", "recuérdame sacar el pollo en 20".
 
     Args:
         minutos: Duración en minutos. Acepta decimales: 0.5 = 30 segundos, 0.16 = ~10 segundos.
@@ -225,7 +232,7 @@ def crear_alarma_hora(hora: str, etiqueta: str = "") -> str:
         return f"fallo: hora mal formateada ({e})"
 
 def listar_temporizadores() -> str:
-    """Lista todos los timers y alarmas activos. Úsalo cuando Fran pregunte 'qué timers tengo', 'qué alarmas hay', 'a qué hora me avisas'."""
+    """Lista todos los timers y alarmas activos. Úsalo cuando nico pregunte 'qué timers tengo', 'qué alarmas hay', 'a qué hora me avisas'."""
     lista = timers.listar()
     if not lista:
         return "no hay timers ni alarmas activos"
@@ -239,7 +246,7 @@ def listar_temporizadores() -> str:
     return "; ".join(partes)
 
 def cancelar_temporizador(nombre: str) -> str:
-    """Cancela un timer o alarma por su nombre (etiqueta) o id. Úsalo cuando Fran diga 'cancela el timer de pasta', 'quita la alarma de las 7', 'olvida lo del pollo'.
+    """Cancela un timer o alarma por su nombre (etiqueta) o id. Úsalo cuando nico diga 'cancela el timer de pasta', 'quita la alarma de las 7', 'olvida lo del pollo'.
 
     Args:
         nombre: Etiqueta o id del timer a cancelar.
@@ -248,7 +255,7 @@ def cancelar_temporizador(nombre: str) -> str:
 
 
 def eventos_de_hoy() -> str:
-    """Lista los eventos que Fran tiene hoy en Google Calendar. Úsalo cuando pregunte 'qué tengo hoy', 'agenda de hoy', 'tengo algo ahora', 'a qué hora es la siguiente'."""
+    """Lista los eventos que nico tiene hoy en Google Calendar. Úsalo cuando pregunte 'qué tengo hoy', 'agenda de hoy', 'tengo algo ahora', 'a qué hora es la siguiente'."""
     try:
         eventos = calendario.eventos_hoy()
     except Exception as e:
@@ -263,7 +270,7 @@ def eventos_de_hoy() -> str:
     return "; ".join(partes)
 
 def eventos_de_la_semana() -> str:
-    """Lista los eventos de los próximos 7 días. Úsalo cuando Fran pregunte por su semana, 'qué tengo esta semana', 'algo en los próximos días'."""
+    """Lista los eventos de los próximos 7 días. Úsalo cuando nico pregunte por su semana, 'qué tengo esta semana', 'algo en los próximos días'."""
     try:
         eventos = calendario.eventos_semana()
     except Exception as e:
@@ -280,7 +287,7 @@ def eventos_de_la_semana() -> str:
     return "; ".join(partes)
 
 def nuevo_evento(titulo: str, inicio_iso: str, duracion_minutos: int = 30) -> str:
-    """Crea un evento en Google Calendar. Úsalo cuando Fran pida 'ponme una reunión', 'crea evento', 'recuérdame en el calendario'. Construye inicio_iso combinando la fecha de hoy (ver contexto) con la hora que pide Fran.
+    """Crea un evento en Google Calendar. Úsalo cuando nico pida 'ponme una reunión', 'crea evento', 'recuérdame en el calendario'. Construye inicio_iso combinando la fecha de hoy (ver contexto) con la hora que pide nico.
 
     Args:
         titulo: Nombre del evento. Ej: 'Dentista', 'Reunión con Iván'.
@@ -295,7 +302,7 @@ def nuevo_evento(titulo: str, inicio_iso: str, duracion_minutos: int = 30) -> st
 
 
 def analiticas_youtube(periodo: str = "7d") -> str:
-    """Devuelve métricas del canal de YouTube de Fran para el período dado. Úsalo cuando pregunte 'cómo va el canal', 'analíticas', 'cuántas views tengo esta semana', 'cómo fue el mes en YouTube'.
+    """Devuelve métricas del canal de YouTube de nico para el período dado. Úsalo cuando pregunte 'cómo va el canal', 'analíticas', 'cuántas views tengo esta semana', 'cómo fue el mes en YouTube'.
 
     Args:
         periodo: Uno de 'hoy', '24h', '7d', 'semana', '28d', 'mes', '30d'. Default '7d'.
@@ -313,7 +320,7 @@ def analiticas_youtube(periodo: str = "7d") -> str:
     )
 
 def ultimos_videos() -> str:
-    """Últimos vídeos publicados en el canal con sus métricas. Úsalo cuando Fran pregunte 'mis últimos vídeos', 'cómo va el último', 'qué subí recientemente'."""
+    """Últimos vídeos publicados en el canal con sus métricas. Úsalo cuando nico pregunte 'mis últimos vídeos', 'cómo va el último', 'qué subí recientemente'."""
     try:
         videos = youtube_stats.videos_recientes(5)
     except Exception as e:
@@ -327,10 +334,10 @@ def ultimos_videos() -> str:
 _modo_llamada_pendiente: str | None = None
 
 def iniciar_modo_llamada(objetivo: str) -> str:
-    """Activa el modo llamada: cuando termines de hablar, entrarás en un loop sin wake word para conversar con un humano a través del móvil en altavoz. Úsala cuando Fran diga 'voy a llamar a X', 'llamo al restaurante para reservar', 'encárgate tú de la llamada'. Responde a Fran en personaje ('coge el móvil, bro, yo me encargo') ANTES de que la tool se ejecute.
+    """Activa el modo llamada: cuando termines de hablar, entrarás en un loop sin wake word para conversar con un humano a través del móvil en altavoz. Úsala cuando nico diga 'voy a llamar a X', 'llamo al restaurante para reservar', 'encárgate tú de la llamada'. Responde a nico en personaje ('coge el móvil, bro, yo me encargo') ANTES de que la tool se ejecute.
 
     Args:
-        objetivo: Descripción clara y completa del objetivo. Ej: 'reservar mesa para 2 personas mañana sábado 25 de abril a las 21:00 en nombre de Fran García', 'pedir hora para revisión dental la semana que viene por la tarde'.
+        objetivo: Descripción clara y completa del objetivo. Ej: 'reservar mesa para 2 personas mañana sábado 25 de abril a las 21:00 en nombre de nico García', 'pedir hora para revisión dental la semana que viene por la tarde'.
     """
     global _modo_llamada_pendiente
     _modo_llamada_pendiente = objetivo
@@ -338,17 +345,17 @@ def iniciar_modo_llamada(objetivo: str) -> str:
 
 
 def recordar(hecho: str, categoria: str = "") -> str:
-    """Guarda un HECHO sobre Fran o su entorno para futuras conversaciones. Úsala proactivamente cuando Fran comparta algo que merezca recordar: gustos (comida, música, géneros), personas importantes (nombre de novia, amigos, familia, jefe), rutinas (horarios, deporte), proyectos, anécdotas graciosas, opiniones fuertes que expresó. NO guardes datos sensibles (contraseñas, DNI, tarjetas). NO guardes cosas triviales de un solo momento ('hoy llueve'); sólo lo que siga siendo cierto la semana que viene.
+    """Guarda un HECHO sobre nico o su entorno para futuras conversaciones. Úsala proactivamente cuando nico comparta algo que merezca recordar: gustos (comida, música, géneros), personas importantes (nombre de novia, amigos, familia, jefe), rutinas (horarios, deporte), proyectos, anécdotas graciosas, opiniones fuertes que expresó. NO guardes datos sensibles (contraseñas, DNI, tarjetas). NO guardes cosas triviales de un solo momento ('hoy llueve'); sólo lo que siga siendo cierto la semana que viene.
 
     Args:
-        hecho: Frase corta en tercera persona. Ej: 'A Fran le gusta la pasta carbonara', 'La novia de Fran se llama Ana', 'Fran está construyendo un asistente de voz llamado Cuántico'.
+        hecho: Frase corta en tercera persona. Ej: 'A nico le gusta la pasta carbonara', 'La novia de nico se llama Ana', 'nico está construyendo un asistente de voz llamado Cuántico'.
         categoria: Etiqueta corta opcional. Ej: 'gustos', 'personas', 'trabajo', 'rutinas', 'opiniones'.
     """
     rid = recuerdos.añadir(hecho, categoria)
     return f"ok: recordado con id {rid}" if rid else "fallo: no se pudo guardar"
 
 def olvidar(coincidencia: str) -> str:
-    """Borra recuerdos que contengan la frase. Úsala cuando Fran diga 'olvida que X', 'ya no soy Y, bórralo', 'quita eso de tu memoria'.
+    """Borra recuerdos que contengan la frase. Úsala cuando nico diga 'olvida que X', 'ya no soy Y, bórralo', 'quita eso de tu memoria'.
 
     Args:
         coincidencia: Fragmento de texto a buscar en los recuerdos guardados. Puede ser una palabra clave o frase parcial.
@@ -357,7 +364,7 @@ def olvidar(coincidencia: str) -> str:
     return f"ok: olvidados {n} recuerdo(s)" if n else "fallo: no encontré recuerdo con eso"
 
 def listar_recuerdos() -> str:
-    """Devuelve los recuerdos guardados sobre Fran. Úsala cuando pregunte '¿qué sabes de mí?', 'qué recuerdas', 'dime qué tienes de mí'."""
+    """Devuelve los recuerdos guardados sobre nico. Úsala cuando pregunte '¿qué sabes de mí?', 'qué recuerdas', 'dime qué tienes de mí'."""
     items = recuerdos.listar(50)
     if not items:
         return "no tengo recuerdos guardados todavía"
@@ -412,6 +419,11 @@ def _prompt_con_memoria() -> str:
     bloque = recuerdos.formatear_para_prompt()
     return SYSTEM_PROMPT + ("\n\n" + bloque if bloque else "")
 
+# Sonido opcional de arranque. Para deshabilitarlo en el futuro, puedes:
+# 1) comentar la línea de abajo, o
+# 2) poner ENABLE_STARTUP_WAV = False en src/altavoz.py
+altavoz.reproducir_sonido_arranque()
+
 micro.inicializar()
 
 try:
@@ -434,7 +446,7 @@ try:
                     en_conversacion = False
                 continue
 
-            print(f"\n👤 Fran: {texto_usuario}")
+            print(f"\n👤 nico: {texto_usuario}")
 
             if any(w in texto_usuario.lower() for w in ['apágate', 'apagate']):
                 despedida = "¡Venga ya! Me voy a por una chimichanga. ¡No me busques, pringao!"
@@ -478,7 +490,7 @@ try:
 
             except Exception as e:
                 print(f"⚠️ Error en OpenRouter: {e}")
-                _hablar("Se me ha frito una neurona, Fran. Repite eso.", "enfadado")
+                _hablar("Se me ha frito una neurona, nico. Repite eso.", "enfadado")
 
             # Seguimos escuchando sin wake word
             texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)

@@ -1,4 +1,4 @@
-"""Métricas de YouTube del canal de Fran.
+"""Métricas de YouTube del canal de nico.
 
 Reutiliza el token OAuth de calendario.py (los scopes YT ya están en calendario.SCOPES).
 Si esto falla por scopes, hay que borrar state/google_token.json y re-autorizar en el Mac.

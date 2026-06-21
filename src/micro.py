@@ -27,7 +27,7 @@ _oww = None
 _vad = None
 _capture_rate = SAMPLE_RATE   # sample rate real del hardware (puede ser 48000 si el device no soporta 16k)
 
-GANANCIA_MIC = 4.0  # ajustable: probar 3.0 / 4.0 / 6.0 / 8.0 según qué tan bajo capture el HW
+GANANCIA_MIC = 8.0  # ajustable: probar 3.0 / 4.0 / 6.0 / 8.0 según qué tan bajo capture el HW
 
 
 def _amplificar(audio_bytes, factor=GANANCIA_MIC):

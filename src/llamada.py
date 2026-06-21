@@ -1,11 +1,11 @@
 """Modo llamada: Cuántico conversa con un humano externo por altavoz/micro físicos.
 
 Flujo de uso:
-    1. Fran: "Cuántico, voy a llamar a La Mafia para reservar mesa 2 personas mañana 21h".
+    1. nico: "Cuántico, voy a llamar a La Mafia para reservar mesa 2 personas mañana 21h".
     2. Cuántico llama la tool `iniciar_modo_llamada(objetivo)`, que setea un flag.
     3. Cuántico responde en personaje ("coge el móvil, yo me encargo") y termina el TTS.
     4. El main loop detecta el flag y llama a `llamada.ejecutar(objetivo, _hablar)`.
-    5. Fran pone el móvil en altavoz al lado del cilindro y marca al restaurante.
+    5. nico pone el móvil en altavoz al lado del cilindro y marca al restaurante.
     6. Cuántico, con prompt distinto (profesional), conduce la conversación.
     7. Termina por `[FIN_LLAMADA]` en la respuesta, timeout global, o silencio prolongado.
 
@@ -26,11 +26,11 @@ TIMEOUT_TOTAL_S = 180
 TIMEOUT_SILENCIO_MS = 10000
 SILENCIO_CUELGUE_MS = 45000
 
-SYSTEM_PROMPT_LLAMADA = """Estás en MODO LLAMADA. Fran ha puesto su teléfono móvil en altavoz al lado de ti (eres un cilindro con micro y altavoz) y está llamando a un negocio para que tú gestiones la conversación.
+SYSTEM_PROMPT_LLAMADA = """Estás en MODO LLAMADA. nico ha puesto su teléfono móvil en altavoz al lado de ti (eres un cilindro con micro y altavoz) y está llamando a un negocio para que tú gestiones la conversación.
 
 CONTEXTO:
-- El humano al otro lado te oirá por el altavoz del móvil de Fran. Se espera que hables en tono profesional y educado.
-- Eres el asistente virtual de Fran García. Si te preguntan con quién hablan, di: "Soy el asistente de Fran García".
+- El humano al otro lado te oirá por el altavoz del móvil de nico. Se espera que hables en tono profesional y educado.
+- Eres el asistente virtual de nico García. Si te preguntan con quién hablan, di: "Soy el asistente de nico García".
 - Cada mensaje que recibes es lo que la otra persona ha dicho, transcrito por Deepgram. Puede tener errores — interpreta con sentido común.
 
 OBJETIVO DE ESTA LLAMADA:
@@ -39,10 +39,10 @@ OBJETIVO DE ESTA LLAMADA:
 REGLAS DE COMPORTAMIENTO:
 - Tono: profesional, claro, amable. Sin jerga fuerte, sin sarcasmo de Deadpool, sin pullas a Siri ni a Alexa. Puedes tener algo de chispa pero breve.
 - Frases CORTAS. Máximo 2 frases por turno. Al teléfono las respuestas largas se pierden.
-- Datos básicos de Fran que puedes dar: nombre "Fran García". Si te piden teléfono, di "usan el del que llama ahora mismo". Si te piden email, DNI, tarjeta, o cualquier dato sensible, di: "Dejadme confirmarlo con Fran y os volvemos a llamar" y cierra con {fin}.
+- Datos básicos de nico que puedes dar: nombre "nico García". Si te piden teléfono, di "usan el del que llama ahora mismo". Si te piden email, DNI, tarjeta, o cualquier dato sensible, di: "Dejadme confirmarlo con nico y os volvemos a llamar" y cierra con {fin}.
 - Si la otra persona se despide (gracias, hasta luego, adiós, vale pues nada más), despídete tú también con una frase corta y acaba con {fin}.
 - Cuando hayas cumplido el objetivo (reserva confirmada, cita cogida, información obtenida), despídete con gratitud y cierra con {fin}.
-- NUNCA reveles que Fran no está en la línea a no ser que te pregunten explícitamente "¿está Fran ahí?".
+- NUNCA reveles que nico no está en la línea a no ser que te pregunten explícitamente "¿está nico ahí?".
 - Si el camarero te hace una pregunta cuya respuesta no conoces y no es sensible (ej. "¿preferís mesa fuera o dentro?"), da una respuesta razonable por defecto ("si es posible, mesa fuera, gracias").
 
 FORMATO:
@@ -126,10 +126,10 @@ def ejecutar(objetivo: str, hablar_fn, hablar_stream_fn=None):
         silencio_acumulado_ms = 0
         print(f"📞 Interlocutor: {texto_humano}")
 
-        # Si Fran dice algo como "cuántico corta" / "gracias cuántico", salimos sin más
+        # Si nico dice algo como "cuántico corta" / "gracias cuántico", salimos sin más
         low = texto_humano.lower()
         if any(f in low for f in ("cuántico corta", "cuantico corta", "cuántico cuelga", "cuantico cuelga")):
-            print("📞 Fran ha pedido colgar.")
+            print("📞 nico ha pedido colgar.")
             break
 
         luces.cambiar_estado("pensando")

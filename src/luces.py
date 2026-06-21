@@ -5,7 +5,7 @@ import neopixel
 import board
 import math
 
-NUM_PIXELS = 12
+NUM_PIXELS = 16
 PIN_LEDS = board.D12
 BRIGHTNESS = 0.2
 
