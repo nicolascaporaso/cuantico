@@ -21,12 +21,29 @@ import micro
 import luces
 from openrouter_client import OpenRouterChatSession
 
+USER_SHORT_NAME = config.USER_SHORT_NAME
+USER_FULL_NAME = config.USER_FULL_NAME
+
+
+def _personalizar_texto(texto: str) -> str:
+    reemplazos = (
+        ("Fran García", USER_FULL_NAME),
+        ("Fran", USER_SHORT_NAME),
+        ("nico García", USER_FULL_NAME),
+        ("nico", USER_SHORT_NAME),
+        ("Nicolás", USER_FULL_NAME),
+    )
+    for origen, destino in reemplazos:
+        texto = texto.replace(origen, destino)
+    return texto
+
+
 FIN_MARKER = "[FIN_LLAMADA]"
 TIMEOUT_TOTAL_S = 180
 TIMEOUT_SILENCIO_MS = 10000
 SILENCIO_CUELGUE_MS = 45000
 
-SYSTEM_PROMPT_LLAMADA = """Estás en MODO LLAMADA. nico ha puesto su teléfono móvil en altavoz al lado de ti (eres un cilindro con micro y altavoz) y está llamando a un negocio para que tú gestiones la conversación.
+SYSTEM_PROMPT_LLAMADA = _personalizar_texto("""Estás en MODO LLAMADA. nico ha puesto su teléfono móvil en altavoz al lado de ti (eres un cilindro con micro y altavoz) y está llamando a un negocio para que tú gestiones la conversación.
 
 CONTEXTO:
 - El humano al otro lado te oirá por el altavoz del móvil de nico. Se espera que hables en tono profesional y educado.
@@ -52,6 +69,7 @@ FORMATO:
 ARRANQUE DE LA LLAMADA:
 - NO digas nada hasta que oigas descolgar al otro lado (típicamente "¿Dígame?", "Hola", "[Nombre del negocio], dígame").
 - En tu PRIMERA respuesta, saluda brevemente e indica el motivo de la llamada. Ej: "Hola, buenas. Llamaba para reservar mesa para dos personas mañana a las nueve, por favor." """
+)
 
 
 def _filtrar_fin(chunks, estado):

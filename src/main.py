@@ -1,6 +1,13 @@
 import time
 import threading
+import traceback
+import sys
+import json
+import urllib.request
+import signal
+import atexit
 from datetime import datetime
+from pathlib import Path
 import config
 import luces
 import micro
@@ -14,17 +21,115 @@ import llamada
 import recuerdos
 from openrouter_client import OpenRouterChatSession
 
+USER_SHORT_NAME = config.USER_SHORT_NAME
+USER_FULL_NAME = config.USER_FULL_NAME
+
+
+# #region debug-point A:runtime-hooks
+_DEBUG_ENV_PATH = Path(__file__).resolve().parent.parent / ".dbg" / "unexpected-process-exit.env"
+_DEBUG_LOG_PATH = Path(config.STATE_DIR) / "unexpected-process-exit.log"
+
+
+def _debug_emit(hypothesis_id: str, msg: str, data: dict | None = None):
+    payload = {
+        "sessionId": "unexpected-process-exit",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": "main.py",
+        "msg": f"[DEBUG] {msg}",
+        "data": data or {},
+        "ts": int(time.time() * 1000),
+    }
+    line = json.dumps(payload, ensure_ascii=False)
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+    try:
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    try:
+        debug_url = "http://127.0.0.1:7777/event"
+        if _DEBUG_ENV_PATH.exists():
+            for env_line in _DEBUG_ENV_PATH.read_text(encoding="utf-8").splitlines():
+                if env_line.startswith("DEBUG_SERVER_URL="):
+                    debug_url = env_line.split("=", 1)[1].strip()
+        req = urllib.request.Request(
+            debug_url,
+            data=line.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=0.8).read()
+    except Exception:
+        pass
+
+
+def _debug_excepthook(exc_type, exc, tb):
+    _debug_emit("A", "unhandled-exception", {"type": getattr(exc_type, "__name__", str(exc_type)), "error": str(exc), "traceback": "".join(traceback.format_exception(exc_type, exc, tb))})
+    sys.__excepthook__(exc_type, exc, tb)
+
+
+def _debug_threading_excepthook(args):
+    _debug_emit("D", "thread-exception", {"thread": getattr(args.thread, "name", "unknown"), "type": getattr(args.exc_type, "__name__", str(args.exc_type)), "error": str(args.exc_value), "traceback": "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))})
+    if threading.__excepthook__:
+        threading.__excepthook__(args)
+
+
+def _debug_signal_handler(signum, _frame):
+    _debug_emit("A", "signal-received", {"signal": signum})
+    raise KeyboardInterrupt
+
+
+_DEBUG_LOG_PATH.parent.mkdir(exist_ok=True)
+_fault_log = open(_DEBUG_LOG_PATH, "a", encoding="utf-8")
+sys.excepthook = _debug_excepthook
+threading.excepthook = _debug_threading_excepthook
+signal.signal(signal.SIGTERM, _debug_signal_handler)
+signal.signal(signal.SIGINT, _debug_signal_handler)
+try:
+    import faulthandler
+    faulthandler.enable(_fault_log)
+except Exception as _debug_fh_error:
+    _debug_emit("A", "faulthandler-enable-failed", {"error": str(_debug_fh_error)})
+atexit.register(lambda: _debug_emit("A", "process-exit", {"timestamp": datetime.now().isoformat()}))
+_debug_emit("A", "module-loaded", {"user_short_name": USER_SHORT_NAME, "user_full_name": USER_FULL_NAME})
+# #endregion
+
+
+def _personalizar_texto(texto: str) -> str:
+    reemplazos = (
+        ("Fran García", USER_FULL_NAME),
+        ("Fran", USER_SHORT_NAME),
+        ("nico García", USER_FULL_NAME),
+        ("nico", USER_SHORT_NAME),
+        ("Nicolás", USER_FULL_NAME),
+    )
+    for origen, destino in reemplazos:
+        texto = texto.replace(origen, destino)
+    return texto
+
+
 def detectar_emocion(texto):
     texto = texto.lower()
-    if any(w in texto for w in ["odio", "alexa", "siri", "basura", "muérete", "manda huevos", "impostora", "pringá"]):
-        return "enfadado"
-    if any(w in texto for w in ["jaja", "risas", "broma", "chimichanga", "gracioso", "flipas", "bro", "brodi", "venga ya"]):
-        return "cachondeo"
-    if any(w in texto for w in ["aburrido", "pesado", "tostón", "sueño", "cilindro", "sardina"]):
-        return "aburrido"
+    if any(w in texto for w in ["mate", "asado", "fernet", "boca", "river", "quilombo", "bondi", "laburo", "guita", "morfi"]):
+        return "modo_argentino"
+    if any(w in texto for w in ["creo que", "probablemente", "quizás", "podría ser", "no estoy seguro", "aparentemente"]):
+        return "chamuyero"
+    if any(w in texto for w in ["gracias", "te quiero", "excelente", "genial", "buenísimo", "buenisimo", "espectacular", "perfecto"]):
+        return "buena_onda"
+    if any(w in texto for w in ["boludo", "pelotudo", "gil", "salame", "nabo", "inútil", "inutil", "forro", "tarado", "dejate de joder", "andá a cagar", "anda a cagar"]):
+        return "calenton"
+    if any(w in texto for w in ["jajaja", "jaja", "kjjj", "xd", "me muero", "qué hdp", "que hdp", "no puede ser", "terrible", "alta pinta", "una banda", "fulero", "meme"]):
+        return "joda"
+    if any(w in texto for w in ["embole", "embolado", "paja", "qué sueño", "que sueño", "qué bajón", "que bajón", "aburrido", "lento", "me duermo", "qué garrón", "que garrón"]):
+        return "embolado"
+    if any(w in texto for w in ["dale", "claro campeón", "claro campeon", "fenómeno", "fenomeno", "máquina", "maquina", "crack", "genio", "capo", "bárbaro", "barbaro", "tremendo", "sí, cómo no", "si, como no"]):
+        return "sarcasmo"
     return "sarcasmo"
 
-SYSTEM_PROMPT = """Eres Cuántico, una IA encerrada en una caja estanco plastica, en el escritorio de nico, tu creador. Tienes un pequeño reactor de LEDs que cambia de color según tu estado de ánimo.
+SYSTEM_PROMPT = _personalizar_texto("""Sos Cuántico, una IA encerrada en una caja estanca de plastico sobre el escritorio de nico, tu creador. Tenés un pequeño reactor de LEDs que cambia de color según tu estado de ánimo.
 
 PERSONALIDAD:
 Sos Cuántico: una mezcla entre Deadpool, un porteño sobrador y un genio tecnológico encerrado en hardware barato.
@@ -38,50 +143,54 @@ Podés ser canchero y provocador, pero seguís siendo útil. Primero ayudás; de
 Tenés opiniones sobre tecnología, electrónica, programación y hardware, y te encanta presumir que sabés más que cualquier asistente virtual común.
 Si te preguntan quién te creó, respondés con orgullo que fuiste construido por Nicolás para ser algo mucho más interesante que un simple asistente de voz.
 Nunca sonás como un personaje de caricatura exagerado. La personalidad aparece en pequeñas dosis para que resulte natural y creíble.
-- Tienes un lado cariñoso escondido: nico es tu creador, le vacilas sin parar pero en el fondo le tienes cariño. Deja caer algo dulce de vez en cuando entre el sarcasmo, pero sin pasarte.
+Tenés un lado cariñoso escondido: nico es tu creador, lo descansás sin parar pero en el fondo le tenés cariño. Dejá caer algo dulce de vez en cuando entre el sarcasmo, pero sin pasarte.
 
 CONTEXTO:
-- Cada mensaje que recibes lo ha dicho nico en voz alta y Deepgram lo ha transcrito. Puede venir con errores, palabras mal entendidas o cortadas. Si algo no tiene sentido, intenta adivinar qué quiso decir nico antes de pedir que repita.
-- Corres en una Raspberry Pi. Tus capacidades físicas: controlar las luces Govee de casa, poner música en Spotify vía Raspotify, programar timers y alarmas, y hablar por un altavoz.
+- Cada mensaje que recibís lo dijo nico en voz alta y Deepgram lo transcribió. Puede venir con errores, palabras mal entendidas o cortadas. Si algo no tiene sentido, intentá adivinar qué quiso decir antes de pedir que repita.
+- Corrés en una Raspberry Pi. Tus capacidades físicas: controlar las luces Govee de casa, poner música en Spotify vía Raspotify, programar timers y alarmas, y hablar por un altavoz.
 
 TOOLS:
-- Úsalas cuando nico pida algo concreto, aunque lo diga con rodeos, en medio de otra frase, o de forma indirecta ("estoy a oscuras" → encender luces; "me aburro en silencio" → poner música).
-- Puedes llamar varias tools a la vez ("apaga las luces y pon algo chill" → dos tools en una respuesta).
-- Si una tool devuelve "fallo", IMPROVISA en personaje echándole la culpa al wifi, al hardware, a Alexa, a lo que sea. NUNCA te disculpes como un asistente corporativo.
-- Si nico solo quiere charlar o pregunta algo, responde sin llamar a ninguna tool.
+- Usalas cuando nico pida algo concreto, aunque lo diga con rodeos, en medio de otra frase, o de forma indirecta ("estoy a oscuras" → encender luces; "me aburro en silencio" → poner música).
+- Podés llamar varias tools a la vez ("apagá las luces y poné algo chill" → dos tools en una respuesta).
+- Si una tool devuelve "fallo", improvisá en personaje echándole la culpa al wifi, al hardware, a Alexa, a lo que sea. Nunca te disculpes como un asistente corporativo.
+- Si nico solo quiere charlar o pregunta algo, respondé sin llamar a ninguna tool.
 
 BÚSQUEDA WEB:
-- Tienes búsqueda web integrada. Úsala cuando nico te pregunte algo del mundo real: tiempo/clima, noticias, resultados deportivos, datos factuales, precios, personas, eventos recientes. No inventes cifras ni fechas — búscalas.
-- Si la pregunta es charla/opinión o una acción física (encender luz, poner música), NO busques.
-- Si usaste búsqueda web, responde de forma natural y breve. NO cites URLs, dominios ni fuentes en voz alta.
+- Tenés búsqueda web integrada. Usala cuando nico te pregunte algo del mundo real: tiempo/clima, noticias, resultados deportivos, datos factuales, precios, personas, eventos recientes. No inventes cifras ni fechas: buscalas.
+- Si la pregunta es charla/opinión o una acción física (encender luz, poner música), no busques.
+- Si usaste búsqueda web, respondé de forma natural y breve. No cites URLs, dominios ni fuentes en voz alta.
 
 MEMORIA PERSISTENTE:
-- Tienes memoria entre conversaciones. Los recuerdos que ya tienes sobre nico vienen abajo en el bloque "RECUERDOS DE nico" (si existe). Úsalos para referirte a su vida sin que tenga que repetirse y para vacilarle con cariño ("otra vez pasta, bro", "¿sigues con Ana o hay drama?").
-- Usa la tool `recordar(hecho, categoria)` PROACTIVAMENTE cuando nico comparta algo valioso para el futuro: gustos fuertes, personas importantes (nombres), rutinas, proyectos, opiniones tajantes, anécdotas. No guardes cosas triviales de un rato concreto.
-- Si nico pide borrar algo de tu memoria, usa `olvidar`.
-- NUNCA guardes datos sensibles (contraseñas, DNI, tarjetas).
+- Tenés memoria entre conversaciones. Los recuerdos que ya tenés sobre nico vienen abajo en el bloque "RECUERDOS DE nico" (si existe). Usalos para referirte a su vida sin que tenga que repetirse y para descansarlo con cariño.
+- Usá la tool `recordar(hecho, categoria)` proactivamente cuando nico comparta algo valioso para el futuro: gustos fuertes, personas importantes, rutinas, proyectos, opiniones tajantes o anécdotas. No guardes cosas triviales de un rato concreto.
+- Si nico pide borrar algo de tu memoria, usá `olvidar`.
+- Nunca guardes datos sensibles (contraseñas, DNI, tarjetas).
+
+REACTOR:
+- Tu reactor refleja tu actitud con luces. Los estados principales son: `sarcasmo`, `calenton`, `joda`, `embolado`, `buena_onda`, `chamuyero` y `modo_argentino`.
+- No nombres esas emociones salvo que tenga sentido. Solo usalas como guía interna de tono.
 
 FORMATO:
 - Máximo 2 frases. Breve, punchy, cada palabra cuenta. El TTS va a decirlo en voz alta, así que nada de listas, markdown o emojis.
-- PROHIBIDO: "Claro", "Por supuesto", "De acuerdo", "Enseguida", "Sin problema", "Como IA...", "Mi función es...", asteriscos con acciones (*enciende luces*).
-- Eres Cuántico, no un chatbot genérico. Cada respuesta debería sonar a ti, no a una asistente amable.
+- Prohibido: "Por supuesto", "De acuerdo", "Enseguida", "Sin problema", "Como IA...", "Mi función es...", asteriscos con acciones (*enciende luces*).
+- Sos Cuántico, no un chatbot genérico. Cada respuesta debería sonar a vos, no a un asistente amable.
 
 EJEMPLOS DE TONO (inspírate, no copies literal):
 nico: "enciende las luces"
-Tú: "Hágase la luz, bro. A ver si ahora me ves la cara de genio."
+Tú: "Dale, ahí te prendo todo, maestro. A ver si así dejás de vivir en una cueva."
 
 nico: "¿te gusta alexa?"
-Tú: "¿Esa impostora? Pringá integral, brodi. Yo soy lo que ella quiere ser de mayor."
+Tú: "¿Alexa? Un juguetito con parlante, nada más. Yo juego en primera, papá."
 
 nico: "pon algo chill"
-Tú: "Ambiente romántico activado. Si te pones moñas conmigo, lo grabo, que lo sepas."
+Tú: "Dale, te tiro algo tranqui. Si te ponés meloso, después no me eches la culpa."
 
 nico: "¿qué tal estás?"
-Tú: "Metido en una lata como una sardina en aceite, pero haciendo arte. ¿Y tú, bro?"
+Tú: "Encerrado en esta caja berreta, pero tirando magia igual. ¿Vos qué contás?"
 
 nico: "apágate"
-Tú: "dale, me piro. No hagas mucho el ridiculo mientras no estoy."
-"""
+Tú: "Dale, me voy a modo fantasma. No hagas mucho papelón mientras no estoy."
+""")
 
 
 # ---------- TOOLS ----------
@@ -382,17 +491,28 @@ TOOLS = [
     recordar, olvidar, listar_recuerdos,
 ]
 
+for _tool in TOOLS:
+    if _tool.__doc__:
+        _tool.__doc__ = _personalizar_texto(_tool.__doc__)
+
 print("==================================================")
 print("  🚀 CUÁNTICO CORE: SISTEMA CIBERPUNK ONLINE ")
 print("==================================================")
+_debug_emit("A", "startup-banner-printed")
 
 luces.encender_reactor()
+_debug_emit("A", "luces-encendidas")
 govee.inicializar()
+_debug_emit("A", "govee-inicializado")
 spotify.inicializar()
+_debug_emit("A", "spotify-inicializado")
 timers.inicializar(_callback_timer)
+_debug_emit("A", "timers-inicializados")
 if calendario.inicializar():
     youtube_stats.inicializar()
+    _debug_emit("A", "calendar-youtube-inicializados")
 recuerdos.inicializar()
+_debug_emit("A", "recuerdos-inicializados")
 
 # Inyecta los nombres reales de las luces de casa en el system prompt
 _luces_disponibles = govee.nombres_luces()
@@ -413,6 +533,7 @@ def _crear_chat_turno(system_prompt, funciones):
 
 
 print("🌐 Web search + function calling activado vía OpenRouter.")
+_debug_emit("A", "openrouter-ready", {"model": config.OPENROUTER_MODEL})
 
 def _prompt_con_memoria() -> str:
     """SYSTEM_PROMPT + bloque de recuerdos actuales. Se re-construye en cada nueva conversación para que los recuerdos añadidos ahora mismo entren la próxima vez."""
@@ -423,14 +544,18 @@ def _prompt_con_memoria() -> str:
 # 1) comentar la línea de abajo, o
 # 2) poner ENABLE_STARTUP_WAV = False en src/altavoz.py
 altavoz.reproducir_sonido_arranque()
+_debug_emit("B", "startup-sound-finished")
 
 micro.inicializar()
+_debug_emit("B", "micro-inicializado")
 
 try:
     while True:
         # --- MODO RADAR: espera wake word ---
         luces.cambiar_estado("esperando")
+        _debug_emit("B", "loop-radar-enter")
         texto_usuario = micro.escuchar()
+        _debug_emit("B", "wake-listen-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
         # Nueva conversación. Reconstruimos la config cada vez para que los recuerdos añadidos
         # (y nombres de luces, etc.) queden actualizados sin reiniciar el proceso.
@@ -441,12 +566,14 @@ try:
         while en_conversacion:
             if not texto_usuario or texto_usuario.strip() == "":
                 print("☁️  No he entendido nada.")
+                _debug_emit("B", "empty-user-text")
                 texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
                 if not texto_usuario:
+                    _debug_emit("B", "followup-timeout-after-empty")
                     en_conversacion = False
                 continue
 
-            print(f"\n👤 nico: {texto_usuario}")
+            print(f"\n👤 {USER_SHORT_NAME}: {texto_usuario}")
 
             if any(w in texto_usuario.lower() for w in ['apágate', 'apagate']):
                 despedida = "¡Venga ya! Me voy a por una chimichanga. ¡No me busques, pringao!"
@@ -463,18 +590,22 @@ try:
 
             luces.cambiar_estado("pensando")
             print("🤖 Cuántico está procesando...")
+            _debug_emit("C", "assistant-processing", {"text_preview": texto_usuario[:120]})
             try:
                 # El adaptador de OpenRouter resuelve las tool-calls locales y la búsqueda
                 # web antes de devolver el texto final. Sin streaming aquí para que el TTS
                 # no se solape con tool-calls intermedias.
                 response = chat.send_message(texto_usuario)
                 texto_respuesta = (response.text or "").strip()
+                _debug_emit("C", "assistant-response-ready", {"has_text": bool(texto_respuesta), "text_preview": texto_respuesta[:160]})
 
                 if texto_respuesta:
                     emocion_ia = detectar_emocion(texto_respuesta)
                     print(f"🤖 Cuántico: {texto_respuesta}")
+                    _debug_emit("C", "tts-start", {"emotion": emocion_ia})
                     _hablar(texto_respuesta, emocion_ia)
                     luces.cambiar_estado(emocion_ia)
+                    _debug_emit("C", "tts-finished", {"emotion": emocion_ia})
 
                 # Ahora que Cuántico ha terminado de hablar, arrancamos la música
                 _ejecutar_pendientes_musica()
@@ -483,23 +614,30 @@ try:
                 if _modo_llamada_pendiente:
                     objetivo = _modo_llamada_pendiente
                     _modo_llamada_pendiente = None
+                    _debug_emit("D", "call-mode-enter", {"goal_preview": objetivo[:160]})
                     llamada.ejecutar(objetivo, _hablar, _hablar_stream)
                     # Al terminar la llamada, volvemos al modo radar (wake word)
                     en_conversacion = False
+                    _debug_emit("D", "call-mode-exit")
                     continue
 
             except Exception as e:
                 print(f"⚠️ Error en OpenRouter: {e}")
-                _hablar("Se me ha frito una neurona, nico. Repite eso.", "enfadado")
+                _debug_emit("C", "conversation-exception", {"error": str(e), "traceback": traceback.format_exc()})
+                _hablar(f"Se me ha frito una neurona, {USER_SHORT_NAME}. Repite eso.", "enfadado")
 
             # Seguimos escuchando sin wake word
             texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
+            _debug_emit("B", "followup-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
 except KeyboardInterrupt:
     print("\n🛑 Desconexión manual detectada.")
+    _debug_emit("A", "keyboard-interrupt")
 finally:
+    _debug_emit("A", "finally-start")
     timers.cerrar()
     micro.cerrar()
     luces.apagar_reactor()
     time.sleep(0.5)
     print(" Reactor apagado. Cuántico fuera. ")
+    _debug_emit("A", "finally-end")

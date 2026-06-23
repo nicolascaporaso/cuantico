@@ -1,5 +1,8 @@
 import requests
 import subprocess
+import time
+import json
+import urllib.request
 from pathlib import Path
 import RPi.GPIO as GPIO
 import luces
@@ -21,6 +24,43 @@ ENABLE_STARTUP_WAV = True
 PIN_MUTE_SPEAKER = 16
 _gpio_listo = False
 
+# #region debug-point B:audio-runtime
+_DEBUG_ENV_PATH = Path(__file__).resolve().parent.parent / ".dbg" / "unexpected-process-exit.env"
+_DEBUG_LOG_PATH = Path(config.STATE_DIR) / "unexpected-process-exit.log"
+
+
+def _debug_emit(msg: str, data: dict | None = None):
+    payload = {
+        "sessionId": "unexpected-process-exit",
+        "runId": "pre-fix",
+        "hypothesisId": "B",
+        "location": "altavoz.py",
+        "msg": f"[DEBUG] {msg}",
+        "data": data or {},
+        "ts": int(time.time() * 1000),
+    }
+    line = json.dumps(payload, ensure_ascii=False)
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+    try:
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    try:
+        debug_url = "http://127.0.0.1:7777/event"
+        if _DEBUG_ENV_PATH.exists():
+            for env_line in _DEBUG_ENV_PATH.read_text(encoding="utf-8").splitlines():
+                if env_line.startswith("DEBUG_SERVER_URL="):
+                    debug_url = env_line.split("=", 1)[1].strip()
+        req = urllib.request.Request(debug_url, data=line.encode("utf-8"), headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=0.8).read()
+    except Exception:
+        pass
+# #endregion
+
 
 def _asegurar_gpio():
     global _gpio_listo
@@ -36,11 +76,13 @@ def _asegurar_gpio():
 def _desmutear():
     _asegurar_gpio()
     GPIO.output(PIN_MUTE_SPEAKER, GPIO.HIGH)
+    _debug_emit("speaker-unmuted", {"pin": PIN_MUTE_SPEAKER})
 
 
 def _mutear():
     _asegurar_gpio()
     GPIO.output(PIN_MUTE_SPEAKER, GPIO.LOW)
+    _debug_emit("speaker-muted", {"pin": PIN_MUTE_SPEAKER})
 
 
 def _aplay_cmd():
@@ -72,6 +114,7 @@ def _lanzar_mpg123():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    _debug_emit("audio-pipeline-started", {"device": ALSA_PLAYBACK_DEVICE, "sox_pid": sox_proc.pid, "aplay_pid": aplay_proc.pid})
     sox_proc.stdout.close()
     # Devolvemos un objeto con stdin y wait() compuesto
     class Pipeline:
@@ -100,16 +143,21 @@ def _tts_a_tuberia(texto, stdin):
         "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
     }
     r = requests.post(url, json=data, headers=headers, stream=True)
+    _debug_emit("elevenlabs-response", {"status": r.status_code, "text_len": len(texto), "voice_id": VOICE_ID})
     if r.status_code != 200:
         print(f"⚠️ ElevenLabs {r.status_code}: {r.text[:120]}")
         return
+    chunks = 0
     for chunk in r.iter_content(chunk_size=2048):
         if chunk:
             try:
                 stdin.write(chunk)
                 stdin.flush()
+                chunks += 1
             except BrokenPipeError:
+                _debug_emit("audio-broken-pipe", {"chunks_sent": chunks, "text_preview": texto[:120]})
                 return
+    _debug_emit("elevenlabs-stream-finished", {"chunks_sent": chunks, "text_preview": texto[:120]})
 
 
 def _encontrar_corte(buffer):
@@ -133,6 +181,7 @@ def reproducir_wav_directo(ruta: str | Path, emocion: str | None = None) -> bool
         luces.cambiar_estado(emocion)
 
     print(f"🔊 [Altavoz] Reproduciendo WAV directo: {wav_path.name}")
+    _debug_emit("wav-playback-start", {"file": str(wav_path), "emotion": emocion, "device": ALSA_PLAYBACK_DEVICE})
     _desmutear()
     try:
         subprocess.run(
@@ -141,11 +190,13 @@ def reproducir_wav_directo(ruta: str | Path, emocion: str | None = None) -> bool
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        _debug_emit("wav-playback-ok", {"file": str(wav_path)})
         return True
     except Exception as e:
         print(
             f"⚠️ No se pudo reproducir {wav_path.name} en {ALSA_PLAYBACK_DEVICE}: {e}"
         )
+        _debug_emit("wav-playback-failed", {"file": str(wav_path), "error": str(e)})
         return False
     finally:
         _mutear()
@@ -162,6 +213,7 @@ def hablar(texto, emocion):
     """Reproduce un texto completo (sin streaming de generación)."""
     luces.cambiar_estado(emocion)
     print(f"🔊 [Altavoz] Escupiendo audio ({emocion})...")
+    _debug_emit("tts-playback-start", {"emotion": emocion, "text_preview": texto[:160]})
     _desmutear()
     proceso = _lanzar_mpg123()
     try:
@@ -172,6 +224,7 @@ def hablar(texto, emocion):
         except Exception:
             pass
         proceso.wait()
+        _debug_emit("tts-playback-end", {"emotion": emocion})
         _mutear()
 
 
@@ -183,6 +236,7 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
     """
     luces.cambiar_estado(emocion)
     print(f"🔊 [Altavoz] Streaming paralelo ({emocion})...")
+    _debug_emit("tts-stream-start", {"emotion": emocion})
     _desmutear()
     proceso = _lanzar_mpg123()
     buffer = ""
@@ -208,4 +262,5 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
         except Exception:
             pass
         proceso.wait()
+        _debug_emit("tts-stream-end", {"emotion": emocion})
         _mutear()
