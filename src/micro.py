@@ -37,6 +37,16 @@ _DEBUG_ENV_PATH = Path(__file__).resolve().parent.parent / ".dbg" / "unexpected-
 _DEBUG_LOG_PATH = Path(config.STATE_DIR) / "unexpected-process-exit.log"
 
 
+def _json_safe(value):
+    """Convierte tipos de numpy a tipos nativos para que el logger no rompa."""
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return str(value)
+
+
 def _debug_emit(msg: str, data: dict | None = None):
     payload = {
         "sessionId": "unexpected-process-exit",
@@ -47,7 +57,7 @@ def _debug_emit(msg: str, data: dict | None = None):
         "data": data or {},
         "ts": int(time.time() * 1000),
     }
-    line = json.dumps(payload, ensure_ascii=False)
+    line = json.dumps(payload, ensure_ascii=False, default=_json_safe)
     try:
         print(line, flush=True)
     except Exception:
@@ -164,7 +174,7 @@ def _esperar_wake():
             print(f"   🔍 score wake={mejor:.3f} (threshold {WAKE_THRESHOLD})")
             _ultimo_log = mejor
         if mejor > WAKE_THRESHOLD:
-            _debug_emit("wake-detected", {"score": round(mejor, 4), "threshold": WAKE_THRESHOLD})
+            _debug_emit("wake-detected", {"score": float(round(mejor, 4)), "threshold": float(WAKE_THRESHOLD)})
             return
 
 

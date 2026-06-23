@@ -17,3 +17,18 @@
 3. Reproducir la caida y observar el ultimo bloque de logs.
 4. Confirmar o descartar hipotesis con evidencia.
 5. Aplicar fix minimo cuando la causa este probada.
+
+## Evidencia Recolectada
+- Hipotesis 1 confirmada.
+- La wake word se detecto correctamente (`score` 0.445 / 0.886), pero el proceso cayo antes de pasar a reconocimiento de voz.
+- La excepcion exacta fue:
+  - `TypeError: Object of type float32 is not JSON serializable`
+  - origen: `micro.py` en `_debug_emit("wake-detected", {"score": round(mejor, 4), ...})`
+- El cierre no vino del flujo de negocio sino del logger de instrumentacion.
+
+## Fix Minimo Aplicado
+1. Se agrego serializacion segura para tipos numpy en `micro.py`.
+2. Se fuerza `score` y `threshold` a `float` nativo al registrar `wake-detected`.
+
+## Estado
+- Listo para reintentar reproduccion con la misma instrumentacion.
