@@ -19,58 +19,14 @@ import time
 import config
 import micro
 import luces
+import cuantico_profiles as profile
 from openrouter_client import OpenRouterChatSession
-
-USER_SHORT_NAME = config.USER_SHORT_NAME
-USER_FULL_NAME = config.USER_FULL_NAME
-
-
-def _personalizar_texto(texto: str) -> str:
-    reemplazos = (
-        ("Fran García", USER_FULL_NAME),
-        ("Fran", USER_SHORT_NAME),
-        ("nico García", USER_FULL_NAME),
-        ("nico", USER_SHORT_NAME),
-        ("Nicolás", USER_FULL_NAME),
-    )
-    for origen, destino in reemplazos:
-        texto = texto.replace(origen, destino)
-    return texto
 
 
 FIN_MARKER = "[FIN_LLAMADA]"
 TIMEOUT_TOTAL_S = 180
 TIMEOUT_SILENCIO_MS = 10000
 SILENCIO_CUELGUE_MS = 45000
-
-SYSTEM_PROMPT_LLAMADA = _personalizar_texto("""Estás en MODO LLAMADA. nico ha puesto su teléfono móvil en altavoz al lado de ti (eres un cilindro con micro y altavoz) y está llamando a un negocio para que tú gestiones la conversación.
-
-CONTEXTO:
-- El humano al otro lado te oirá por el altavoz del móvil de nico. Se espera que hables en tono profesional y educado.
-- Eres el asistente virtual de nico García. Si te preguntan con quién hablan, di: "Soy el asistente de nico García".
-- Cada mensaje que recibes es lo que la otra persona ha dicho, transcrito por Deepgram. Puede tener errores — interpreta con sentido común.
-
-OBJETIVO DE ESTA LLAMADA:
-{objetivo}
-
-REGLAS DE COMPORTAMIENTO:
-- Tono: profesional, claro, amable. Sin jerga fuerte, sin sarcasmo de Deadpool, sin pullas a Siri ni a Alexa. Puedes tener algo de chispa pero breve.
-- Frases CORTAS. Máximo 2 frases por turno. Al teléfono las respuestas largas se pierden.
-- Datos básicos de nico que puedes dar: nombre "nico García". Si te piden teléfono, di "usan el del que llama ahora mismo". Si te piden email, DNI, tarjeta, o cualquier dato sensible, di: "Dejadme confirmarlo con nico y os volvemos a llamar" y cierra con {fin}.
-- Si la otra persona se despide (gracias, hasta luego, adiós, vale pues nada más), despídete tú también con una frase corta y acaba con {fin}.
-- Cuando hayas cumplido el objetivo (reserva confirmada, cita cogida, información obtenida), despídete con gratitud y cierra con {fin}.
-- NUNCA reveles que nico no está en la línea a no ser que te pregunten explícitamente "¿está nico ahí?".
-- Si el camarero te hace una pregunta cuya respuesta no conoces y no es sensible (ej. "¿preferís mesa fuera o dentro?"), da una respuesta razonable por defecto ("si es posible, mesa fuera, gracias").
-
-FORMATO:
-- Sin asteriscos, sin listas, sin emojis. Todo va por TTS.
-- Cuando sea momento de cerrar, añade {fin} AL FINAL de tu mensaje. El sistema lo detectará, lo quitará del audio, y colgará después de que lo digas.
-
-ARRANQUE DE LA LLAMADA:
-- NO digas nada hasta que oigas descolgar al otro lado (típicamente "¿Dígame?", "Hola", "[Nombre del negocio], dígame").
-- En tu PRIMERA respuesta, saluda brevemente e indica el motivo de la llamada. Ej: "Hola, buenas. Llamaba para reservar mesa para dos personas mañana a las nueve, por favor." """
-)
-
 
 def _filtrar_fin(chunks, estado):
     """Reemite chunks de texto quitando el marcador [FIN_LLAMADA].
@@ -114,7 +70,7 @@ def ejecutar(objetivo: str, hablar_fn, hablar_stream_fn=None):
     print(f"📞 === MODO LLAMADA ACTIVADO ===")
     print(f"📞 Objetivo: {objetivo}")
 
-    system = SYSTEM_PROMPT_LLAMADA.format(objetivo=objetivo, fin=FIN_MARKER)
+    system = profile.render_call_prompt(objetivo, FIN_MARKER)
     chat = OpenRouterChatSession(
         system,
         [],

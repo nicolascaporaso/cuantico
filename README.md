@@ -267,7 +267,80 @@ journalctl -u cuantico -f   # ver logs
 
 ### Cambia la personalidad
 
-Edita `SYSTEM_PROMPT` en `src/main.py`. Es el alma de Cuántico — su tono, sus rivalidades, cómo se refiere a ti, qué hace en cada situación. Está pensado para Deadpool en español, pero puedes cambiarlo entero.
+Ahora la personalidad no se toca en `src/main.py`: se configura desde `.env` y `src/cuantico_profiles.json`.
+
+1. Elige el perfil activo en `.env`:
+
+```env
+CUANTICO_PROFILE=argentino
+```
+
+Perfiles incluidos:
+
+- `argentino`
+- `espanol`
+- `tanguero`
+
+2. Reinicia Cuántico para aplicar el cambio.
+
+### Edita o crea perfiles
+
+Todo vive en `src/cuantico_profiles.json`.
+
+Cada perfil puede definir:
+
+- `main_prompt`: personalidad principal del asistente
+- `call_prompt`: tono del modo llamada
+- `default_emotion`: emoción por defecto si no detecta otra
+- `emotion_rules`: palabras/frases que disparan emociones
+- `light_states`: colores, efectos y velocidades del reactor
+
+Ejemplo mínimo de selección:
+
+```env
+CUANTICO_PROFILE=tanguero
+```
+
+Ejemplo de estructura de un perfil:
+
+```json
+{
+  "label": "Mi perfil",
+  "default_emotion": "sarcasmo",
+  "main_prompt": "Sos Cuantico...",
+  "call_prompt": "Estas en MODO LLAMADA...",
+  "emotion_rules": [
+    { "name": "buena_onda", "triggers": ["gracias", "genial"] }
+  ],
+  "light_states": {
+    "buena_onda": {
+      "effect": "pulse",
+      "color": [0, 220, 70],
+      "speed": 2.5
+    }
+  }
+}
+```
+
+Para crear un perfil nuevo:
+
+1. Duplica uno dentro de `src/cuantico_profiles.json`
+2. Ponle una nueva clave, por ejemplo `cyberpunk`
+3. En `.env`, cambia:
+
+```env
+CUANTICO_PROFILE=cyberpunk
+```
+
+Efectos de luces soportados:
+
+- `pulse`
+- `spinner`
+- `flicker`
+- `rainbow`
+- `blink`
+- `alternate`
+- `off`
 
 ### Cambia la voz
 
@@ -299,6 +372,8 @@ Define una función Python con docstring claro en `src/main.py` y añádela a la
 └── src/
     ├── main.py              # entry point — system prompt + tools + loop principal
     ├── config.py            # carga centralizada de .env
+    ├── cuantico_profiles.py # loader de perfiles
+    ├── cuantico_profiles.json # prompts, emociones y luces por perfil
     ├── micro.py             # captura audio + wake word + STT (Deepgram)
     ├── altavoz.py           # TTS (ElevenLabs) con streaming
     ├── luces.py             # animaciones del NeoPixel ring

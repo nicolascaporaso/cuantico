@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from datetime import datetime
 
 import config
 
@@ -54,7 +53,7 @@ def añadir(texto: str, categoria: str = "") -> int:
         return int(existe[0])
     cur = _conn.execute(
         "INSERT INTO recuerdos (texto, categoria, creado_en) VALUES (?, ?, ?)",
-        (texto, (categoria or "").strip(), datetime.now().isoformat()),
+        (texto, (categoria or "").strip(), config.now_local().isoformat()),
     )
     _conn.commit()
     return int(cur.lastrowid or 0)

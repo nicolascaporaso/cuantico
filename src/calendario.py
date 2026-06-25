@@ -126,8 +126,8 @@ def crear_evento(titulo: str, inicio_iso: str, duracion_min: int = 30, descripci
     body = {
         "summary": titulo,
         "description": descripcion,
-        "start": {"dateTime": inicio_dt.isoformat(), "timeZone": "Europe/Madrid"},
-        "end": {"dateTime": fin_dt.isoformat(), "timeZone": "Europe/Madrid"},
+        "start": {"dateTime": inicio_dt.isoformat(), "timeZone": config.CUANTICO_TIMEZONE},
+        "end": {"dateTime": fin_dt.isoformat(), "timeZone": config.CUANTICO_TIMEZONE},
     }
     e = _servicio.events().insert(calendarId="primary", body=body).execute()
     return {"id": e.get("id"), "html_link": e.get("htmlLink")}

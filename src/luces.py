@@ -1,9 +1,13 @@
-import time
-import threading
-import random
-import neopixel
-import board
+import colorsys
 import math
+import random
+import threading
+import time
+
+import board
+import neopixel
+
+import cuantico_profiles as profile
 
 NUM_PIXELS = 16
 PIN_LEDS = board.D12
@@ -14,100 +18,122 @@ pixels = neopixel.NeoPixel(PIN_LEDS, NUM_PIXELS, brightness=BRIGHTNESS, auto_wri
 _estado = "esperando"
 _hilo_luces = None
 
-_ALIASES_ESTADO = {
-    "enfadado": "calenton",
-    "cachondeo": "joda",
-    "aburrido": "embolado",
-}
+
+def _clamp_channel(value: float) -> int:
+    return max(0, min(255, int(value)))
+
+
+def _scale_color(color, factor: float):
+    return tuple(_clamp_channel(channel * factor) for channel in color)
+
+
+def _fill(color):
+    pixels.fill(tuple(_clamp_channel(channel) for channel in color))
+    pixels.show()
+
+
+def _apply_pulse(cfg, now: float):
+    val = (math.sin(now * cfg.get("speed", 2.0)) + 1) / 2
+    min_factor = cfg.get("min_factor", 0.15)
+    max_factor = cfg.get("max_factor", 1.0)
+    factor = min_factor + ((max_factor - min_factor) * val)
+    _fill(_scale_color(cfg.get("color", (255, 255, 255)), factor))
+
+
+def _apply_spinner(cfg, now: float):
+    pixels.fill(tuple(cfg.get("background", (0, 0, 0))))
+    speed = cfg.get("speed", 15.0)
+    head = int(now * speed) % NUM_PIXELS
+    trail = max(1, int(cfg.get("trail", 3)))
+    tail_factor = cfg.get("tail_factor", 0.35)
+    color = cfg.get("color", (255, 255, 255))
+    for offset in range(trail):
+        idx = (head - offset) % NUM_PIXELS
+        factor = max(0.1, 1.0 - (offset * tail_factor))
+        pixels[idx] = _scale_color(color, factor)
+    pixels.show()
+
+
+def _apply_flicker(cfg, _now: float):
+    _fill(cfg.get("color", (255, 0, 0)))
+    time.sleep(random.uniform(cfg.get("min_sleep_s", 0.02), cfg.get("max_sleep_s", 0.08)))
+    _fill(cfg.get("background", (10, 0, 0)))
+    time.sleep(random.uniform(cfg.get("min_sleep_s", 0.02), cfg.get("max_sleep_s", 0.08)))
+
+
+def _apply_rainbow(cfg, now: float):
+    speed = cfg.get("speed", 1.0)
+    randomness = cfg.get("randomness", 0.0)
+    base_hue = (now * speed) % 1.0
+    for i in range(NUM_PIXELS):
+        hue = (base_hue + (i / NUM_PIXELS)) % 1.0
+        sat = 1.0
+        val = 1.0
+        if randomness:
+            val = max(0.45, min(1.0, 0.75 + random.uniform(-randomness, randomness)))
+        r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+        pixels[i] = (_clamp_channel(r * 255), _clamp_channel(g * 255), _clamp_channel(b * 255))
+    pixels.show()
+
+
+def _apply_blink(cfg, now: float):
+    speed = cfg.get("speed", 1.5)
+    on = int(now * speed * 2) % 2 == 0
+    _fill(cfg.get("color", (255, 255, 0)) if on else cfg.get("background", (0, 0, 0)))
+
+
+def _apply_alternate(cfg, now: float):
+    colors = cfg.get("colors", [(255, 255, 255), (0, 0, 0)])
+    speed = cfg.get("speed", 4.0)
+    phase = int(now * speed)
+    for i in range(NUM_PIXELS):
+        pixels[i] = tuple(colors[(i + phase) % len(colors)])
+    pixels.show()
+
+
+def _render_state(state_name: str):
+    cfg = profile.get_light_state(state_name)
+    effect = cfg.get("effect", "pulse")
+    now = time.time()
+    if effect == "off":
+        _fill((0, 0, 0))
+        return True
+    if effect == "pulse":
+        _apply_pulse(cfg, now)
+    elif effect == "spinner":
+        _apply_spinner(cfg, now)
+    elif effect == "flicker":
+        _apply_flicker(cfg, now)
+        return False
+    elif effect == "rainbow":
+        _apply_rainbow(cfg, now)
+    elif effect == "blink":
+        _apply_blink(cfg, now)
+    elif effect == "alternate":
+        _apply_alternate(cfg, now)
+    else:
+        _fill(cfg.get("color", (255, 255, 255)))
+    time.sleep(cfg.get("sleep_s", 0.03))
+    return False
 
 
 def cambiar_estado(nuevo_estado):
     global _estado
-    _estado = _ALIASES_ESTADO.get(nuevo_estado, nuevo_estado)
+    _estado = profile.resolve_state_name(nuevo_estado)
+
 
 def _animar():
-
-    
     global _estado
     while True:
-        if _estado == "esperando":
-            val = (math.sin(time.time() * 2) + 1) / 2
-            pixels.fill((int(val * 100) + 10, 0, 0))
-            pixels.show()
-            time.sleep(0.02)
-
-        elif _estado == "escuchando":
-            val = (math.sin(time.time() * 4) + 1) / 2
-            pixels.fill((0, int(val * 150) + 20, int(val * 200) + 40))
-            pixels.show()
-            time.sleep(0.02)
-
-        elif _estado == "pensando":
-            pixels.fill((0, 0, 0))
-            for i in range(3):
-                idx = (int(time.time() * 15) + i) % NUM_PIXELS
-                pixels[idx] = (255, 100, 0)
-            pixels.show()
-            time.sleep(0.05)
-
-        elif _estado == "sarcasmo":
-            val = (math.sin(time.time() * 8) + 1) / 2
-            pixels.fill((int(val * 180) + 60, int(val * 60) + 20, 0))
-            pixels.show()
-            time.sleep(0.02)
-
-        elif _estado == "calenton":
-            pixels.fill((random.randint(150, 255), 0, 0))
-            pixels.show()
-            time.sleep(random.uniform(0.02, 0.08))
-            pixels.fill((10, 0, 0))
-            pixels.show()
-            time.sleep(random.uniform(0.02, 0.08))
-
-        elif _estado == "joda":
-            for i in range(NUM_PIXELS):
-                hue = (int(time.time() * 100) + (i * 256 // NUM_PIXELS)) % 256
-                pixels[i] = (
-                    hue,
-                    random.randint(80, 255),
-                    random.randint(40, 180),
-                )
-            pixels.show()
-            time.sleep(0.02)
-
-        elif _estado == "embolado":
-            val = (math.sin(time.time() * 1) + 1) / 2
-            pixels.fill((0, int(val * 20), int(val * 70) + 20))
-            pixels.show()
-            time.sleep(0.05)
-
-        elif _estado == "buena_onda":
-            val = (math.sin(time.time() * 2.5) + 1) / 2
-            pixels.fill((0, int(val * 180) + 50, int(val * 60) + 10))
-            pixels.show()
-            time.sleep(0.03)
-
-        elif _estado == "chamuyero":
-            val = (math.sin(time.time() * 1.5) + 1) / 2
-            pixels.fill((int(val * 180) + 40, int(val * 120) + 30, 0))
-            pixels.show()
-            time.sleep(0.06)
-
-        elif _estado == "modo_argentino":
-            for i in range(NUM_PIXELS):
-                pixels[i] = (120, 180, 255) if (i + int(time.time() * 5)) % 2 == 0 else (255, 255, 255)
-            pixels.show()
-            time.sleep(0.08)
-
-        elif _estado == "apagado":
-            pixels.fill((0, 0, 0))
-            pixels.show()
+        if _render_state(_estado):
             break
+
 
 def encender_reactor():
     global _hilo_luces
     _hilo_luces = threading.Thread(target=_animar, daemon=True)
     _hilo_luces.start()
+
 
 def apagar_reactor():
     cambiar_estado("apagado")

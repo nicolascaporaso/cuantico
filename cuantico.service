@@ -3,14 +3,16 @@ Description=Cuántico — asistente de voz
 # Espera a red + sonido antes de arrancar (Gemini/Deepgram/micro USB)
 After=network-online.target sound.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
 # NeoPixel pide /dev/mem → root obligatorio.
 User=root
-# Sustituye <USER> y la ruta por la tuya. Ej: /home/pi/Cuantico
-WorkingDirectory=/home/<USER>/Cuantico
-ExecStart=/home/<USER>/Cuantico/.venv/bin/python3 /home/<USER>/Cuantico/src/main.py
+# Ajustado para este montaje en Raspberry Pi.
+WorkingDirectory=/home/nicolas/cuantico
+ExecStart=/home/nicolas/cuantico/.venv/bin/python3 /home/nicolas/cuantico/src/main.py
 
 # Deja que el micro USB termine de enumerar
 ExecStartPre=/bin/sleep 3
@@ -18,8 +20,6 @@ ExecStartPre=/bin/sleep 3
 # Si peta (ej. wifi tarda), reintentar
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=3
 
 # Logs a journald (se consultan con: journalctl -u cuantico -f)
 StandardOutput=journal

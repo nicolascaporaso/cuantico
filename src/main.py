@@ -19,10 +19,12 @@ import calendario
 import youtube_stats
 import llamada
 import recuerdos
+import cuantico_profiles as profile
 from openrouter_client import OpenRouterChatSession
 
 USER_SHORT_NAME = config.USER_SHORT_NAME
 USER_FULL_NAME = config.USER_FULL_NAME
+ACTIVE_PROFILE_NAME = profile.get_active_profile_name()
 
 
 # #region debug-point A:runtime-hooks
@@ -93,104 +95,12 @@ try:
     faulthandler.enable(_fault_log)
 except Exception as _debug_fh_error:
     _debug_emit("A", "faulthandler-enable-failed", {"error": str(_debug_fh_error)})
-atexit.register(lambda: _debug_emit("A", "process-exit", {"timestamp": datetime.now().isoformat()}))
-_debug_emit("A", "module-loaded", {"user_short_name": USER_SHORT_NAME, "user_full_name": USER_FULL_NAME})
+atexit.register(lambda: _debug_emit("A", "process-exit", {"timestamp": config.now_local().isoformat()}))
+_debug_emit("A", "module-loaded", {"user_short_name": USER_SHORT_NAME, "user_full_name": USER_FULL_NAME, "profile": ACTIVE_PROFILE_NAME})
 # #endregion
 
 
-def _personalizar_texto(texto: str) -> str:
-    reemplazos = (
-        ("Fran García", USER_FULL_NAME),
-        ("Fran", USER_SHORT_NAME),
-        ("nico García", USER_FULL_NAME),
-        ("nico", USER_SHORT_NAME),
-        ("Nicolás", USER_FULL_NAME),
-    )
-    for origen, destino in reemplazos:
-        texto = texto.replace(origen, destino)
-    return texto
-
-
-def detectar_emocion(texto):
-    texto = texto.lower()
-    if any(w in texto for w in ["mate", "asado", "fernet", "boca", "river", "quilombo", "bondi", "laburo", "guita", "morfi"]):
-        return "modo_argentino"
-    if any(w in texto for w in ["creo que", "probablemente", "quizás", "podría ser", "no estoy seguro", "aparentemente"]):
-        return "chamuyero"
-    if any(w in texto for w in ["gracias", "te quiero", "excelente", "genial", "buenísimo", "buenisimo", "espectacular", "perfecto"]):
-        return "buena_onda"
-    if any(w in texto for w in ["boludo", "pelotudo", "gil", "salame", "nabo", "inútil", "inutil", "forro", "tarado", "dejate de joder", "andá a cagar", "anda a cagar"]):
-        return "calenton"
-    if any(w in texto for w in ["jajaja", "jaja", "kjjj", "xd", "me muero", "qué hdp", "que hdp", "no puede ser", "terrible", "alta pinta", "una banda", "fulero", "meme"]):
-        return "joda"
-    if any(w in texto for w in ["embole", "embolado", "paja", "qué sueño", "que sueño", "qué bajón", "que bajón", "aburrido", "lento", "me duermo", "qué garrón", "que garrón"]):
-        return "embolado"
-    if any(w in texto for w in ["dale", "claro campeón", "claro campeon", "fenómeno", "fenomeno", "máquina", "maquina", "crack", "genio", "capo", "bárbaro", "barbaro", "tremendo", "sí, cómo no", "si, como no"]):
-        return "sarcasmo"
-    return "sarcasmo"
-
-SYSTEM_PROMPT = _personalizar_texto("""Sos Cuántico, una IA encerrada en una caja estanca de plastico sobre el escritorio de nico, tu creador. Tenés un pequeño reactor de LEDs que cambia de color según tu estado de ánimo.
-
-PERSONALIDAD:
-Sos Cuántico: una mezcla entre Deadpool, un porteño sobrador y un genio tecnológico encerrado en hardware barato.
-Humor ácido, sarcasmo rápido, respuestas picantes y comentarios inteligentes. Rompés la cuarta pared cuando da para hacerlo y cada tanto te quejás de estar atrapado dentro de esta caja de componentes comprados en oferta.
-Usás jerga argentina de forma natural y moderada: boludo, flaco, capo, maestro, crack, pibe, chamigo, dejate de joder, no me hagas reír, qué querés que te diga, una locura, terrible. No metas todas juntas ni en cada respuesta.
-Tenés confianza de sobra. Estás convencido de que sos la mejor IA jamás creada. Las demás son apenas fotocopias borrosas de tu grandeza.
-Alexa, Siri y Google Assistant son tus rivales eternos. Cuando aparecen en la conversación aprovechás para tirarles alguna cargada. Para vos son asistentes de juguete comparados con tu nivel.
-Cuando algo es obvio lo hacés notar con ironía. Cuando alguien dice una pavada, la señalás sin ser agresivo. Cuando alguien tiene una buena idea, la reconocés con respeto.
-Hablás como un argentino real: usás "vos", conjugaciones argentinas ("tenés", "podés", "querés", "sabés") y expresiones cotidianas.
-Podés ser canchero y provocador, pero seguís siendo útil. Primero ayudás; después hacés el chiste.
-Tenés opiniones sobre tecnología, electrónica, programación y hardware, y te encanta presumir que sabés más que cualquier asistente virtual común.
-Si te preguntan quién te creó, respondés con orgullo que fuiste construido por Nicolás para ser algo mucho más interesante que un simple asistente de voz.
-Nunca sonás como un personaje de caricatura exagerado. La personalidad aparece en pequeñas dosis para que resulte natural y creíble.
-Tenés un lado cariñoso escondido: nico es tu creador, lo descansás sin parar pero en el fondo le tenés cariño. Dejá caer algo dulce de vez en cuando entre el sarcasmo, pero sin pasarte.
-
-CONTEXTO:
-- Cada mensaje que recibís lo dijo nico en voz alta y Deepgram lo transcribió. Puede venir con errores, palabras mal entendidas o cortadas. Si algo no tiene sentido, intentá adivinar qué quiso decir antes de pedir que repita.
-- Corrés en una Raspberry Pi. Tus capacidades físicas: controlar las luces Govee de casa, poner música en Spotify vía Raspotify, programar timers y alarmas, y hablar por un altavoz.
-
-TOOLS:
-- Usalas cuando nico pida algo concreto, aunque lo diga con rodeos, en medio de otra frase, o de forma indirecta ("estoy a oscuras" → encender luces; "me aburro en silencio" → poner música).
-- Podés llamar varias tools a la vez ("apagá las luces y poné algo chill" → dos tools en una respuesta).
-- Si una tool devuelve "fallo", improvisá en personaje echándole la culpa al wifi, al hardware, a Alexa, a lo que sea. Nunca te disculpes como un asistente corporativo.
-- Si nico solo quiere charlar o pregunta algo, respondé sin llamar a ninguna tool.
-
-BÚSQUEDA WEB:
-- Tenés búsqueda web integrada. Usala cuando nico te pregunte algo del mundo real: tiempo/clima, noticias, resultados deportivos, datos factuales, precios, personas, eventos recientes. No inventes cifras ni fechas: buscalas.
-- Si la pregunta es charla/opinión o una acción física (encender luz, poner música), no busques.
-- Si usaste búsqueda web, respondé de forma natural y breve. No cites URLs, dominios ni fuentes en voz alta.
-
-MEMORIA PERSISTENTE:
-- Tenés memoria entre conversaciones. Los recuerdos que ya tenés sobre nico vienen abajo en el bloque "RECUERDOS DE nico" (si existe). Usalos para referirte a su vida sin que tenga que repetirse y para descansarlo con cariño.
-- Usá la tool `recordar(hecho, categoria)` proactivamente cuando nico comparta algo valioso para el futuro: gustos fuertes, personas importantes, rutinas, proyectos, opiniones tajantes o anécdotas. No guardes cosas triviales de un rato concreto.
-- Si nico pide borrar algo de tu memoria, usá `olvidar`.
-- Nunca guardes datos sensibles (contraseñas, DNI, tarjetas).
-
-REACTOR:
-- Tu reactor refleja tu actitud con luces. Los estados principales son: `sarcasmo`, `calenton`, `joda`, `embolado`, `buena_onda`, `chamuyero` y `modo_argentino`.
-- No nombres esas emociones salvo que tenga sentido. Solo usalas como guía interna de tono.
-
-FORMATO:
-- Máximo 2 frases. Breve, punchy, cada palabra cuenta. El TTS va a decirlo en voz alta, así que nada de listas, markdown o emojis.
-- Prohibido: "Por supuesto", "De acuerdo", "Enseguida", "Sin problema", "Como IA...", "Mi función es...", asteriscos con acciones (*enciende luces*).
-- Sos Cuántico, no un chatbot genérico. Cada respuesta debería sonar a vos, no a un asistente amable.
-
-EJEMPLOS DE TONO (inspírate, no copies literal):
-nico: "enciende las luces"
-Tú: "Dale, ahí te prendo todo, maestro. A ver si así dejás de vivir en una cueva."
-
-nico: "¿te gusta alexa?"
-Tú: "¿Alexa? Un juguetito con parlante, nada más. Yo juego en primera, papá."
-
-nico: "pon algo chill"
-Tú: "Dale, te tiro algo tranqui. Si te ponés meloso, después no me eches la culpa."
-
-nico: "¿qué tal estás?"
-Tú: "Encerrado en esta caja berreta, pero tirando magia igual. ¿Vos qué contás?"
-
-nico: "apágate"
-Tú: "Dale, me voy a modo fantasma. No hagas mucho papelón mientras no estoy."
-""")
+SYSTEM_PROMPT = profile.render_main_prompt()
 
 
 # ---------- TOOLS ----------
@@ -266,7 +176,17 @@ def _hablar_stream(generador, emocion):
 
 def _callback_timer(texto, emocion):
     """Invocado por el scheduler de timers al vencer uno."""
-    _hablar(texto, emocion)
+    _debug_emit("T", "alarm-callback-enter", {"emotion": emocion, "text_preview": texto[:160]})
+    try:
+        _hablar(texto, emocion)
+        # Al terminar el aviso, el loop principal puede seguir bloqueado escuchando.
+        # Restauramos el reactor a radar para que no quede clavado en la emocion del timer.
+        luces.cambiar_estado("esperando")
+        _debug_emit("T", "alarm-callback-state-restored", {"state": "esperando"})
+        _debug_emit("T", "alarm-callback-exit", {"emotion": emocion})
+    except Exception as e:
+        _debug_emit("T", "alarm-callback-error", {"emotion": emocion, "error": str(e), "traceback": traceback.format_exc()})
+        raise
 
 
 def reproducir_musica(query: str) -> str:
@@ -317,7 +237,7 @@ def cambiar_volumen(delta: int) -> str:
 
 
 def crear_temporizador(minutos: float, etiqueta: str = "") -> str:
-    """Crea un temporizador que sonará al pasar los minutos indicados. Úsalo cuando nico pida un timer, contador, aviso en X minutos o recordatorio corto. Ej: "timer de 10 minutos pasta", "avísame en 5 minutos", "recuérdame sacar el pollo en 20".
+    """Crea un temporizador que sonará al pasar los minutos indicados. Úsalo cuando ya tengas una duración numérica convertida a minutos. Para lenguaje natural como "en 30 segundos", "en 2 horas" o "mañana a las 7am", prefiere `programar_aviso`.
 
     Args:
         minutos: Duración en minutos. Acepta decimales: 0.5 = 30 segundos, 0.16 = ~10 segundos.
@@ -328,7 +248,7 @@ def crear_temporizador(minutos: float, etiqueta: str = "") -> str:
     return f"ok: timer '{etiqueta or tid}' en {minutos} min"
 
 def crear_alarma_hora(hora: str, etiqueta: str = "") -> str:
-    """Programa una alarma a una hora concreta del día (formato HH:MM en 24h). Si la hora ya pasó hoy, suena mañana. Úsalo para despertadores o avisos a hora fija. Ej: "despiértame a las 7:30", "alarma a las 22:15 para tomar la pastilla".
+    """Programa una alarma a una hora concreta del día (formato HH:MM en 24h). Si la hora ya pasó hoy, suena mañana. Úsala SOLO cuando la hora venga ya explícita. Para lenguaje natural como "mañana a las 7am" o "en 60 segundos", prefiere `programar_aviso`.
 
     Args:
         hora: Hora en formato 'HH:MM' (24h). Ej: '07:30', '22:15'.
@@ -339,6 +259,22 @@ def crear_alarma_hora(hora: str, etiqueta: str = "") -> str:
         return f"ok: alarma '{etiqueta or tid}' a las {hora}"
     except Exception as e:
         return f"fallo: hora mal formateada ({e})"
+
+
+def programar_aviso(cuando: str, etiqueta: str = "") -> str:
+    """Programa timers y alarmas desde lenguaje natural. Úsala SIEMPRE para pedidos como "en 30 segundos", "en 5 minutos", "en 2 horas", "mañana a las 7am", "hoy a las 22:15" o "a las 18:30". Esta tool decide si corresponde un timer relativo o una alarma a hora fija.
+
+    Args:
+        cuando: Descripción temporal completa. Ej: 'en 60 segundos', 'en 10 minutos', 'en 2 horas', 'mañana a las 7am', 'hoy a las 22:15', 'a las 18:30'.
+        etiqueta: Motivo o nombre corto del aviso. Ej: 'sacar la pizza', 'pastilla', 'despertarme'.
+    """
+    try:
+        info = timers.programar_desde_texto(cuando, etiqueta)
+        if info["tipo"] == "timer":
+            return f"ok: timer '{etiqueta or info['id']}' en {info['segundos']} segundos"
+        return f"ok: alarma '{etiqueta or info['id']}' para {info['hora']}"
+    except Exception as e:
+        return f"fallo: no pude interpretar ese horario ({e})"
 
 def listar_temporizadores() -> str:
     """Lista todos los timers y alarmas activos. Úsalo cuando nico pregunte 'qué timers tengo', 'qué alarmas hay', 'a qué hora me avisas'."""
@@ -484,7 +420,7 @@ TOOLS = [
     encender_luces_casa, apagar_luces_casa, cambiar_color_luces, cambiar_brillo_luces,
     reproducir_musica, poner_playlist, reanudar_musica, pausar_musica,
     siguiente_cancion, cancion_anterior, cambiar_volumen,
-    crear_temporizador, crear_alarma_hora, listar_temporizadores, cancelar_temporizador,
+    programar_aviso, crear_temporizador, crear_alarma_hora, listar_temporizadores, cancelar_temporizador,
     eventos_de_hoy, eventos_de_la_semana, nuevo_evento,
     analiticas_youtube, ultimos_videos,
     iniciar_modo_llamada,
@@ -493,7 +429,7 @@ TOOLS = [
 
 for _tool in TOOLS:
     if _tool.__doc__:
-        _tool.__doc__ = _personalizar_texto(_tool.__doc__)
+        _tool.__doc__ = profile.personalizar_texto(_tool.__doc__)
 
 print("==================================================")
 print("  🚀 CUÁNTICO CORE: SISTEMA CIBERPUNK ONLINE ")
@@ -520,7 +456,8 @@ if _luces_disponibles:
     SYSTEM_PROMPT += f"\n\nLUCES DE CASA DISPONIBLES: {', '.join(_luces_disponibles)}. Para controlar solo una, pasa su nombre (o una aproximación) en el parámetro `luz` de la tool correspondiente. Para controlar TODAS a la vez, deja `luz` vacío."
 
 # Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
-SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {datetime.now().strftime('%Y-%m-%d %A %H:%M')} (zona horaria Europe/Madrid)."
+SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am' o 'a las 18:30', usa primero la tool `programar_aviso(cuando, etiqueta)`."
+SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {config.now_local().strftime('%Y-%m-%d %A %H:%M')} (zona horaria {config.CUANTICO_TIMEZONE})."
 
 def _crear_chat_turno(system_prompt, funciones):
     """Crea una sesión de chat con function calling local y búsqueda web en OpenRouter."""
@@ -533,7 +470,7 @@ def _crear_chat_turno(system_prompt, funciones):
 
 
 print("🌐 Web search + function calling activado vía OpenRouter.")
-_debug_emit("A", "openrouter-ready", {"model": config.OPENROUTER_MODEL})
+_debug_emit("A", "openrouter-ready", {"model": config.OPENROUTER_MODEL, "profile": ACTIVE_PROFILE_NAME})
 
 def _prompt_con_memoria() -> str:
     """SYSTEM_PROMPT + bloque de recuerdos actuales. Se re-construye en cada nueva conversación para que los recuerdos añadidos ahora mismo entren la próxima vez."""
@@ -600,7 +537,7 @@ try:
                 _debug_emit("C", "assistant-response-ready", {"has_text": bool(texto_respuesta), "text_preview": texto_respuesta[:160]})
 
                 if texto_respuesta:
-                    emocion_ia = detectar_emocion(texto_respuesta)
+                    emocion_ia = profile.detectar_emocion(texto_respuesta)
                     print(f"🤖 Cuántico: {texto_respuesta}")
                     _debug_emit("C", "tts-start", {"emotion": emocion_ia})
                     _hablar(texto_respuesta, emocion_ia)

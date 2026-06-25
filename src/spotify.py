@@ -15,6 +15,12 @@ _device_id = None
 
 def inicializar():
     global _sp
+    # Spotify opcional
+    if not config.SPOTIFY_ENABLED:
+        print("🎵 Spotify deshabilitado")
+        _sp = None
+        return
+
     try:
         auth = SpotifyOAuth(
             client_id=config.SPOTIFY_CLIENT_ID,
