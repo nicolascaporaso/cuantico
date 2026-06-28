@@ -76,6 +76,12 @@ SPOTIFY_REDIRECT_URI = _opt(
 SPOTIFY_ENABLED = bool(
     SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET
 )
+MUSIC_BACKEND_DEFAULT = _opt("MUSIC_BACKEND_DEFAULT", "spotify").lower()
+YT_DLP_COMMAND = _opt("YT_DLP_COMMAND", "yt-dlp")
+MPV_COMMAND = _opt("MPV_COMMAND", "mpv")
+YOUTUBE_AUDIO_SEARCH_LIMIT = max(1, int(_opt("YOUTUBE_AUDIO_SEARCH_LIMIT", "5")))
+YOUTUBE_PLAYLIST_SEARCH_LIMIT = max(1, int(_opt("YOUTUBE_PLAYLIST_SEARCH_LIMIT", "8")))
+MPV_IPC_SOCKET_PATH = _opt("MPV_IPC_SOCKET_PATH", "/tmp/cuantico-mpv.sock")
 
 # Google OAuth (Calendar + YouTube comparten Client ID)
 GOOGLE_CLIENT_SECRETS_PATH = _ruta("GOOGLE_CLIENT_SECRETS_PATH", "state/google_client.json")

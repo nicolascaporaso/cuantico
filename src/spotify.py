@@ -44,6 +44,13 @@ def inicializar():
         _sp = None
 
 
+def asegurar_inicializado() -> bool:
+    if _sp:
+        return True
+    inicializar()
+    return _sp is not None
+
+
 def _refrescar_dispositivo(verboso=False, reintentos=1, espera=3):
     """Busca el dispositivo Raspotify. Si no lo encuentra, reintenta con espera (para dar tiempo a que se registre tras boot)."""
     global _device_id
@@ -73,14 +80,32 @@ def _refrescar_dispositivo(verboso=False, reintentos=1, espera=3):
             return
 
 
+def disponible_para_reproducir() -> tuple[bool, str]:
+    if not config.SPOTIFY_ENABLED:
+        return False, "Spotify está deshabilitado en .env"
+    if not asegurar_inicializado():
+        return False, "Spotify no inicializa correctamente"
+    _refrescar_dispositivo()
+    if not _device_id:
+        return False, "no veo un dispositivo Spotify Connect llamado raspotify o cuantico"
+    return True, "ok"
+
+
+def resumen_estado() -> dict:
+    return {
+        "enabled": config.SPOTIFY_ENABLED,
+        "initialized": _sp is not None,
+        "device_id": _device_id,
+        "device_hints": DEVICE_HINTS[:],
+    }
+
+
 def reproducir(query=None):
-    if not _sp:
-        print("   ⚠️ Spotify no inicializado (_sp=None)")
+    ok, motivo = disponible_para_reproducir()
+    if not ok:
+        print(f"   ⚠️ {motivo}")
         return False
     _refrescar_dispositivo(verboso=True)
-    if not _device_id:
-        print("   ⚠️ Sin dispositivo Raspotify visible — no se puede reproducir.")
-        return False
     try:
         if query:
             r = _sp.search(q=query, type="track", limit=1)
@@ -121,13 +146,11 @@ def reproducir(query=None):
 
 def reproducir_playlist(query):
     """Busca tracks que casen con `query` (género/ambiente) y los reproduce como cola."""
-    if not _sp:
-        print("   ⚠️ Spotify no inicializado")
+    ok, motivo = disponible_para_reproducir()
+    if not ok:
+        print(f"   ⚠️ {motivo}")
         return False
     _refrescar_dispositivo()
-    if not _device_id:
-        print("   ⚠️ Sin dispositivo Raspotify visible")
-        return False
     try:
         # Buscamos tracks directamente (no playlists) — esquiva el bug de
         # "context is not available" con playlists editoriales Default de Spotify.
@@ -159,7 +182,8 @@ def reproducir_playlist(query):
 
 
 def pausar():
-    if not _sp or not _device_id:
+    ok, _ = disponible_para_reproducir()
+    if not ok:
         return False
     try:
         _sp.pause_playback(device_id=_device_id)
@@ -170,7 +194,8 @@ def pausar():
 
 
 def siguiente():
-    if not _sp or not _device_id:
+    ok, _ = disponible_para_reproducir()
+    if not ok:
         return False
     try:
         _sp.next_track(device_id=_device_id)
@@ -181,7 +206,8 @@ def siguiente():
 
 
 def anterior():
-    if not _sp or not _device_id:
+    ok, _ = disponible_para_reproducir()
+    if not ok:
         return False
     try:
         _sp.previous_track(device_id=_device_id)
@@ -193,7 +219,8 @@ def anterior():
 
 def volumen(delta):
     """delta: entero positivo para subir, negativo para bajar."""
-    if not _sp or not _device_id:
+    ok, _ = disponible_para_reproducir()
+    if not ok:
         return False
     try:
         estado = _sp.current_playback()

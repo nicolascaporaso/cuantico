@@ -145,6 +145,7 @@ sudo apt update
 sudo apt install -y \
   git python3-venv python3-pip \
   sox libsox-fmt-mp3 alsa-utils tmux \
+  mpv yt-dlp \
   bluez bluez-alsa-utils
 ```
 
@@ -276,6 +277,11 @@ GOVEE_API_KEY=
 SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
+MUSIC_BACKEND_DEFAULT=spotify
+YT_DLP_COMMAND=yt-dlp
+MPV_COMMAND=mpv
+YOUTUBE_AUDIO_SEARCH_LIMIT=5
+YOUTUBE_PLAYLIST_SEARCH_LIMIT=8
 ```
 
 ### Google / YouTube
@@ -325,6 +331,46 @@ Primera autorización:
 Se guarda en:
 
 - `.spotify_cache`
+
+## Musica Por YouTube
+
+Cuántico también puede reproducir música sin Premium usando:
+
+- `yt-dlp` para buscar y resolver audio
+- `mpv` para reproducir y controlar play/pause/siguiente/anterior/volumen
+
+Este backend usa la misma ruta de audio activa que el TTS:
+
+- I2S / VoiceHAT local
+- parlante Bluetooth si está conectado y activo
+
+Estado persistente:
+
+- `state/music_backend.json`
+
+Variables útiles:
+
+```env
+MUSIC_BACKEND_DEFAULT=spotify
+YT_DLP_COMMAND=yt-dlp
+MPV_COMMAND=mpv
+YOUTUBE_AUDIO_SEARCH_LIMIT=5
+YOUTUBE_PLAYLIST_SEARCH_LIMIT=8
+```
+
+Frases útiles:
+
+- `usá youtube para la música`
+- `usá spotify para la música`
+- `qué sistema de música estás usando`
+- `poné Soda Stereo por youtube`
+- `poneme algo chill por youtube`
+
+Notas reales:
+
+- si el backend activo es `youtube`, los comandos generales de música salen por `yt-dlp + mpv`
+- si el backend activo es `spotify`, siguen saliendo por Spotify Connect / Raspotify
+- cambiar el backend por voz actualiza la preferencia persistente para los próximos pedidos
 
 ## Google Calendar y YouTube
 
@@ -583,6 +629,7 @@ Durante el uso se crean o actualizan estos archivos:
 - `state/recuerdos.db`
 - `state/timers.json`
 - `state/bluetooth_audio.json`
+- `state/music_backend.json`
 - `state/google_client.json`
 - `state/google_token.json`
 - `state/unexpected-process-exit.log`
@@ -616,6 +663,8 @@ Y también:
     ├── llamada.py
     ├── luces.py
     ├── main.py
+    ├── music_router.py
+    ├── music_youtube.py
     ├── micro.py
     ├── openrouter_client.py
     ├── recuerdos.py
@@ -643,6 +692,13 @@ Es normal en algunos devices I2S/VoiceHAT. `micro.py` ya hace fallback a 48 kHz 
 - verifica que `raspotify` esté corriendo
 - revisa el nombre del dispositivo Connect
 - ajusta `DEVICE_HINTS` en `src/spotify.py` si hace falta
+
+### YouTube no reproduce musica
+
+- instala `mpv` y `yt-dlp`
+- revisa que `YT_DLP_COMMAND` y `MPV_COMMAND` apunten a binarios válidos
+- si usás Bluetooth, verifica que `state/bluetooth_audio.json` apunte al parlante correcto
+- si `spotify` te da `403`, cambia temporalmente el backend con `usá youtube para la música`
 
 ### Govee da 401 o no controla nada
 

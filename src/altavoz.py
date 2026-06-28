@@ -92,6 +92,23 @@ def _resolver_salida():
     return salida
 
 
+def resolver_salida_audio():
+    """Expone la ruta de audio actual para otros reproductores del proyecto."""
+    return _resolver_salida()
+
+
+def activar_salida_audio(salida: dict):
+    """Desmutea la salida local cuando el backend de audio lo necesita."""
+    if salida.get("needs_gpio"):
+        _desmutear()
+
+
+def desactivar_salida_audio(salida: dict):
+    """Vuelve a mutear la salida local cuando termina la reproducción."""
+    if salida.get("needs_gpio"):
+        _mutear()
+
+
 def _aplay_cmd(salida: dict):
     """Centraliza el device ALSA para no repetirlo en cada reproducción."""
     return ["aplay", "-q", "-D", salida["device"]]
@@ -210,8 +227,7 @@ def reproducir_wav_directo(ruta: str | Path, emocion: str | None = None) -> bool
             "route_label": salida["label"],
         },
     )
-    if salida["needs_gpio"]:
-        _desmutear()
+    activar_salida_audio(salida)
     try:
         subprocess.run(
             [*_aplay_cmd(salida), str(wav_path)],
@@ -228,8 +244,7 @@ def reproducir_wav_directo(ruta: str | Path, emocion: str | None = None) -> bool
         _debug_emit("wav-playback-failed", {"file": str(wav_path), "error": str(e)})
         return False
     finally:
-        if salida["needs_gpio"]:
-            _mutear()
+        desactivar_salida_audio(salida)
 
 
 def reproducir_sonido_arranque() -> bool:
@@ -245,8 +260,7 @@ def hablar(texto, emocion):
     print(f"🔊 [Altavoz] Escupiendo audio ({emocion})...")
     _debug_emit("tts-playback-start", {"emotion": emocion, "text_preview": texto[:160]})
     proceso = _lanzar_mpg123()
-    if proceso.route["needs_gpio"]:
-        _desmutear()
+    activar_salida_audio(proceso.route)
     try:
         _tts_a_tuberia(texto, proceso.stdin)
     finally:
@@ -259,8 +273,7 @@ def hablar(texto, emocion):
             "tts-playback-end",
             {"emotion": emocion, "route_kind": proceso.route["kind"], "route_label": proceso.route["label"]},
         )
-        if proceso.route["needs_gpio"]:
-            _mutear()
+        desactivar_salida_audio(proceso.route)
 
 
 def hablar_stream(generador_texto, emocion="sarcasmo"):
@@ -273,8 +286,7 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
     print(f"🔊 [Altavoz] Streaming paralelo ({emocion})...")
     _debug_emit("tts-stream-start", {"emotion": emocion})
     proceso = _lanzar_mpg123()
-    if proceso.route["needs_gpio"]:
-        _desmutear()
+    activar_salida_audio(proceso.route)
     buffer = ""
     try:
         for chunk in generador_texto:
@@ -302,5 +314,4 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
             "tts-stream-end",
             {"emotion": emocion, "route_kind": proceso.route["kind"], "route_label": proceso.route["label"]},
         )
-        if proceso.route["needs_gpio"]:
-            _mutear()
+        desactivar_salida_audio(proceso.route)

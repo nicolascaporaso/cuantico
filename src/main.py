@@ -14,7 +14,7 @@ import micro
 import altavoz
 import bluetooth_audio
 import govee
-import spotify
+import music_router
 import timers
 import calendario
 import youtube_stats
@@ -150,15 +150,18 @@ def _defer(fn, *args):
     _pendientes_musica.append((fn, args))
 
 def _ejecutar_pendientes_musica():
+    ejecutadas = 0
     if _pendientes_musica:
         print(f"🎧 Ejecutando {len(_pendientes_musica)} acción(es) de música diferida(s)…")
     while _pendientes_musica:
         fn, args = _pendientes_musica.pop(0)
         try:
             ok = fn(*args)
+            ejecutadas += 1
             print(f"   · {fn.__name__}({args}) → {ok}")
         except Exception as e:
             print(f"⚠️ Acción de música diferida falló: {e}")
+    return ejecutadas
 
 
 # Lock que serializa cualquier reproducción TTS. Si Cuántico está hablando y un
@@ -191,50 +194,79 @@ def _callback_timer(texto, emocion):
 
 
 def reproducir_musica(query: str) -> str:
-    """Busca y reproduce una canción o artista CONCRETO en Spotify. Úsala SOLO cuando nico nombra una canción o artista específico. Ej: "pon bohemian rhapsody", "pon despacito", "pon algo de queen".
+    """Busca y reproduce una canción o artista CONCRETO usando el backend de música activo. Si nico pide explícitamente 'por YouTube' o 'por Spotify', cambia primero el backend correspondiente. Ej: "pon bohemian rhapsody", "pon despacito", "pon algo de queen por youtube".
 
     Args:
         query: Nombre de la canción o artista. Ej: 'bohemian rhapsody', 'queen', 'metallica enter sandman', 'despacito luis fonsi'.
     """
-    _defer(spotify.reproducir, query)
-    return "ok"
+    ok, motivo = music_router.disponible_para_reproducir()
+    if not ok:
+        return f"fallo: {motivo}"
+    backend = music_router.backend_actual()
+    _defer(music_router.reproducir, query)
+    return f"ok: preparo reproducción por {backend}"
 
 def poner_playlist(descripcion: str) -> str:
-    """Busca una playlist de Spotify por género, estilo o ambiente y la pone entera en shuffle. Úsala cuando nico pide un género o vibe en lugar de una canción concreta. Ej: "pon algo de reggaeton", "música chill", "rock para conducir", "algo para estudiar", "ponme hits de los 80", "música de fiesta", "algo relajante".
+    """Busca música por género, estilo o ambiente usando el backend activo. Si nico menciona YouTube o Spotify de forma explícita, cambia primero el backend. Ej: "pon algo de reggaeton", "música chill", "rock para conducir", "algo para estudiar", "ponme hits de los 80", "música de fiesta", "algo relajante".
 
     Args:
         descripcion: Género, estilo o ambiente. Ej: 'reggaeton', 'chill lofi', 'rock clásico', 'fiesta latina', 'concentración estudiar', 'jazz relajante', 'hits 80s'.
     """
-    _defer(spotify.reproducir_playlist, descripcion)
-    return "ok"
+    ok, motivo = music_router.disponible_para_reproducir()
+    if not ok:
+        return f"fallo: {motivo}"
+    backend = music_router.backend_actual()
+    _defer(music_router.reproducir_playlist, descripcion)
+    return f"ok: preparo playlist por {backend}"
 
 def reanudar_musica() -> str:
-    """Reanuda la música que estaba pausada, o pone música genérica cuando nico pide música sin especificar ("pon música", "dale play", "pon algo")."""
-    _defer(spotify.reproducir)
-    return "ok"
+    """Reanuda la música del backend activo, o intenta arrancar una reproducción genérica si ese backend lo soporta cuando nico pide "pon música", "dale play" o "pon algo"."""
+    ok, motivo = music_router.disponible_para_reproducir()
+    if not ok:
+        return f"fallo: {motivo}"
+    backend = music_router.backend_actual()
+    _defer(music_router.reanudar)
+    return f"ok: reanudo música por {backend}"
 
 def pausar_musica() -> str:
-    """Pausa la música que está sonando en Spotify. Úsala cuando nico pida silencio, parar, callar la música, o diga que va a hablar por teléfono."""
+    """Pausa la música del backend activo. Úsala cuando nico pida silencio, parar, callar la música, o diga que va a hablar por teléfono."""
     # Pausar no genera audio nuevo, se ejecuta ya mismo.
-    return "ok" if spotify.pausar() else "fallo: no había música sonando"
+    return "ok" if music_router.pausar() else "fallo: no había música sonando"
 
 def siguiente_cancion() -> str:
-    """Salta a la siguiente canción en Spotify. Úsala si nico dice que la canción es una castaña, no le mola, o pide cambiarla."""
-    _defer(spotify.siguiente)
-    return "ok"
+    """Salta a la siguiente canción en el backend activo. Úsala si nico dice que la canción es una castaña, no le mola, o pide cambiarla."""
+    _defer(music_router.siguiente)
+    return "ok: siguiente tema"
 
 def cancion_anterior() -> str:
-    """Vuelve a la canción anterior en Spotify."""
-    _defer(spotify.anterior)
-    return "ok"
+    """Vuelve a la canción anterior en el backend activo."""
+    _defer(music_router.anterior)
+    return "ok: tema anterior"
 
 def cambiar_volumen(delta: int) -> str:
-    """Sube o baja el volumen de Spotify un porcentaje. Úsala cuando nico diga que no oye, está alto, molesta, los vecinos se quejan, etc.
+    """Sube o baja el volumen del backend de música activo un porcentaje. Úsala cuando nico diga que no oye, está alto, molesta, los vecinos se quejan, etc.
 
     Args:
         delta: Cantidad a cambiar. Típico: +15 para subir, -15 para bajar. Más agresivo: +30 o -30.
     """
-    return "ok" if spotify.volumen(delta) else "fallo: no hay reproducción activa para cambiar volumen"
+    return "ok" if music_router.volumen(delta) else "fallo: no hay reproducción activa para cambiar volumen"
+
+
+def usar_spotify_para_musica() -> str:
+    """Deja Spotify como backend preferido para música. Úsala cuando nico diga 'usa spotify', 'ponelo por spotify' o 'quiero usar raspotify'."""
+    backend = music_router.seleccionar_backend("spotify")
+    return f"ok: desde ahora uso {backend} para la música"
+
+
+def usar_youtube_para_musica() -> str:
+    """Deja YouTube como backend preferido para música usando yt-dlp y mpv. Úsala cuando nico diga 'usa youtube', 'ponelo por youtube' o 'quiero el reproductor gratis'."""
+    backend = music_router.seleccionar_backend("youtube")
+    return f"ok: desde ahora uso {backend} para la música"
+
+
+def backend_musica_actual() -> str:
+    """Cuenta qué backend de música está activo y si Spotify o YouTube están listos. Úsala cuando nico pregunte qué sistema se está usando para reproducir música."""
+    return music_router.resumen_backend_actual()
 
 
 def buscar_parlantes_bluetooth() -> str:
@@ -506,6 +538,7 @@ TOOLS = [
     encender_luces_casa, apagar_luces_casa, cambiar_color_luces, cambiar_brillo_luces,
     reproducir_musica, poner_playlist, reanudar_musica, pausar_musica,
     siguiente_cancion, cancion_anterior, cambiar_volumen,
+    usar_spotify_para_musica, usar_youtube_para_musica, backend_musica_actual,
     buscar_parlantes_bluetooth, listar_parlantes_bluetooth, conectar_parlante_bluetooth,
     desconectar_parlante_bluetooth, parlante_bluetooth_actual, usar_altavoz_integrado,
     programar_aviso, crear_temporizador, crear_alarma_hora, listar_temporizadores, cancelar_temporizador,
@@ -528,8 +561,8 @@ luces.encender_reactor()
 _debug_emit("A", "luces-encendidas")
 govee.inicializar()
 _debug_emit("A", "govee-inicializado")
-spotify.inicializar()
-_debug_emit("A", "spotify-inicializado")
+music_router.inicializar()
+_debug_emit("A", "music-router-inicializado", {"backend": music_router.backend_actual()})
 timers.inicializar(_callback_timer)
 _debug_emit("A", "timers-inicializados")
 if calendario.inicializar():
@@ -545,6 +578,7 @@ if _luces_disponibles:
 
 # Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
 SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am' o 'a las 18:30', usa primero la tool `programar_aviso(cuando, etiqueta)`."
+SYSTEM_PROMPT += "\n\nMUSICA: el backend preferido puede ser Spotify o YouTube. Si nico dice explícitamente 'por spotify', 'usa spotify', 'por youtube' o 'usa youtube', usa primero la tool de selección correspondiente y luego la tool de música."
 SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {config.now_local().strftime('%Y-%m-%d %A %H:%M')} (zona horaria {config.CUANTICO_TIMEZONE})."
 
 def _crear_chat_turno(system_prompt, funciones):
@@ -633,7 +667,7 @@ try:
                     _debug_emit("C", "tts-finished", {"emotion": emocion_ia})
 
                 # Ahora que Cuántico ha terminado de hablar, arrancamos la música
-                _ejecutar_pendientes_musica()
+                musica_ejecutada = _ejecutar_pendientes_musica()
 
                 # Si en este turno se activó el modo llamada, entramos ahora que ya habló
                 if _modo_llamada_pendiente:
@@ -644,6 +678,11 @@ try:
                     # Al terminar la llamada, volvemos al modo radar (wake word)
                     en_conversacion = False
                     _debug_emit("D", "call-mode-exit")
+                    continue
+
+                if musica_ejecutada:
+                    _debug_emit("B", "music-turn-skip-followup", {"count": musica_ejecutada})
+                    en_conversacion = False
                     continue
 
             except Exception as e:
@@ -661,6 +700,7 @@ except KeyboardInterrupt:
 finally:
     _debug_emit("A", "finally-start")
     timers.cerrar()
+    music_router.detener_todo()
     micro.cerrar()
     luces.apagar_reactor()
     time.sleep(0.5)
