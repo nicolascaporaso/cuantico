@@ -7,14 +7,12 @@ from pathlib import Path
 import RPi.GPIO as GPIO
 import luces
 import config
+import bluetooth_audio
 
 ELEVENLABS_API_KEY = config.ELEVENLABS_API_KEY
 VOICE_ID = config.ELEVENLABS_VOICE_ID
 TTS_MODEL = "eleven_turbo_v2_5"  # ~250ms TTFB, calidad cercana al multilingual
 STARTUP_WAV_PATH = Path(__file__).resolve().parent.parent / "test.wav"
-# La VoiceHAT expone mejor compatibilidad por `plughw`, porque ALSA convierte
-# el formato/rate del audio antes de mandarlo al hardware I2S.
-ALSA_PLAYBACK_DEVICE = "plughw:0,0"
 # Pon esto a False si en el futuro quieres desactivar el WAV de arranque.
 ENABLE_STARTUP_WAV = True
 
@@ -85,9 +83,18 @@ def _mutear():
     _debug_emit("speaker-muted", {"pin": PIN_MUTE_SPEAKER})
 
 
-def _aplay_cmd():
+def _resolver_salida():
+    """Permite cambiar entre I2S local y Bluetooth sin tocar el resto del TTS."""
+    salida = bluetooth_audio.obtener_salida_activa()
+    salida.setdefault("device", config.ALSA_PLAYBACK_DEVICE)
+    salida.setdefault("label", salida["device"])
+    salida.setdefault("needs_gpio", True)
+    return salida
+
+
+def _aplay_cmd(salida: dict):
     """Centraliza el device ALSA para no repetirlo en cada reproducción."""
-    return ["aplay", "-q", "-D", ALSA_PLAYBACK_DEVICE]
+    return ["aplay", "-q", "-D", salida["device"]]
 
 
 def _lanzar_mpg123():
@@ -98,6 +105,7 @@ def _lanzar_mpg123():
     - treble +2:   da un toque de presencia
     - gain -n:     normaliza volumen
     """
+    salida = _resolver_salida()
     sox_proc = subprocess.Popen(
         ["sox", "-q", "-t", "mp3", "-", "-t", "wav", "-",
          "highpass", "300",
@@ -109,23 +117,33 @@ def _lanzar_mpg123():
         stderr=subprocess.DEVNULL,
     )
     aplay_proc = subprocess.Popen(
-        _aplay_cmd(),
+        _aplay_cmd(salida),
         stdin=sox_proc.stdout,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    _debug_emit("audio-pipeline-started", {"device": ALSA_PLAYBACK_DEVICE, "sox_pid": sox_proc.pid, "aplay_pid": aplay_proc.pid})
+    _debug_emit(
+        "audio-pipeline-started",
+        {
+            "device": salida["device"],
+            "route_kind": salida["kind"],
+            "route_label": salida["label"],
+            "sox_pid": sox_proc.pid,
+            "aplay_pid": aplay_proc.pid,
+        },
+    )
     sox_proc.stdout.close()
     # Devolvemos un objeto con stdin y wait() compuesto
     class Pipeline:
-        def __init__(self, a, b):
+        def __init__(self, a, b, route):
             self._a = a
             self._b = b
             self.stdin = a.stdin
+            self.route = route
         def wait(self):
             self._a.wait()
             self._b.wait()
-    return Pipeline(sox_proc, aplay_proc)
+    return Pipeline(sox_proc, aplay_proc, salida)
 
 
 def _tts_a_tuberia(texto, stdin):
@@ -180,12 +198,23 @@ def reproducir_wav_directo(ruta: str | Path, emocion: str | None = None) -> bool
     if emocion:
         luces.cambiar_estado(emocion)
 
+    salida = _resolver_salida()
     print(f"🔊 [Altavoz] Reproduciendo WAV directo: {wav_path.name}")
-    _debug_emit("wav-playback-start", {"file": str(wav_path), "emotion": emocion, "device": ALSA_PLAYBACK_DEVICE})
-    _desmutear()
+    _debug_emit(
+        "wav-playback-start",
+        {
+            "file": str(wav_path),
+            "emotion": emocion,
+            "device": salida["device"],
+            "route_kind": salida["kind"],
+            "route_label": salida["label"],
+        },
+    )
+    if salida["needs_gpio"]:
+        _desmutear()
     try:
         subprocess.run(
-            [*_aplay_cmd(), str(wav_path)],
+            [*_aplay_cmd(salida), str(wav_path)],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -194,12 +223,13 @@ def reproducir_wav_directo(ruta: str | Path, emocion: str | None = None) -> bool
         return True
     except Exception as e:
         print(
-            f"⚠️ No se pudo reproducir {wav_path.name} en {ALSA_PLAYBACK_DEVICE}: {e}"
+            f"⚠️ No se pudo reproducir {wav_path.name} en {salida['device']}: {e}"
         )
         _debug_emit("wav-playback-failed", {"file": str(wav_path), "error": str(e)})
         return False
     finally:
-        _mutear()
+        if salida["needs_gpio"]:
+            _mutear()
 
 
 def reproducir_sonido_arranque() -> bool:
@@ -214,8 +244,9 @@ def hablar(texto, emocion):
     luces.cambiar_estado(emocion)
     print(f"🔊 [Altavoz] Escupiendo audio ({emocion})...")
     _debug_emit("tts-playback-start", {"emotion": emocion, "text_preview": texto[:160]})
-    _desmutear()
     proceso = _lanzar_mpg123()
+    if proceso.route["needs_gpio"]:
+        _desmutear()
     try:
         _tts_a_tuberia(texto, proceso.stdin)
     finally:
@@ -224,8 +255,12 @@ def hablar(texto, emocion):
         except Exception:
             pass
         proceso.wait()
-        _debug_emit("tts-playback-end", {"emotion": emocion})
-        _mutear()
+        _debug_emit(
+            "tts-playback-end",
+            {"emotion": emocion, "route_kind": proceso.route["kind"], "route_label": proceso.route["label"]},
+        )
+        if proceso.route["needs_gpio"]:
+            _mutear()
 
 
 def hablar_stream(generador_texto, emocion="sarcasmo"):
@@ -237,8 +272,9 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
     luces.cambiar_estado(emocion)
     print(f"🔊 [Altavoz] Streaming paralelo ({emocion})...")
     _debug_emit("tts-stream-start", {"emotion": emocion})
-    _desmutear()
     proceso = _lanzar_mpg123()
+    if proceso.route["needs_gpio"]:
+        _desmutear()
     buffer = ""
     try:
         for chunk in generador_texto:
@@ -262,5 +298,9 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
         except Exception:
             pass
         proceso.wait()
-        _debug_emit("tts-stream-end", {"emotion": emocion})
-        _mutear()
+        _debug_emit(
+            "tts-stream-end",
+            {"emotion": emocion, "route_kind": proceso.route["kind"], "route_label": proceso.route["label"]},
+        )
+        if proceso.route["needs_gpio"]:
+            _mutear()

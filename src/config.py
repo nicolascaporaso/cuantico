@@ -24,6 +24,13 @@ def _opt(clave: str, por_defecto: str = "") -> str:
     return os.getenv(clave, por_defecto).strip()
 
 
+def _opt_bool(clave: str, por_defecto: bool = False) -> bool:
+    valor = os.getenv(clave)
+    if valor is None:
+        return por_defecto
+    return valor.strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
+
+
 def _ruta(clave: str, por_defecto: str = "") -> str:
     """Rutas relativas se resuelven contra la raíz del repo."""
     v = _opt(clave, por_defecto)
@@ -42,6 +49,10 @@ CUANTICO_PROFILE = _opt("CUANTICO_PROFILE", "argentino")
 CUANTICO_TIMEZONE = _opt("CUANTICO_TIMEZONE", "America/Argentina/Buenos_Aires")
 USER_SHORT_NAME = _opt("USER_SHORT_NAME", "Nico")
 USER_FULL_NAME = _opt("USER_FULL_NAME", "Nicolas")
+ALSA_PLAYBACK_DEVICE = _opt("ALSA_PLAYBACK_DEVICE", "plughw:0,0")
+BLUETOOTH_SCAN_SECONDS = int(_opt("BLUETOOTH_SCAN_SECONDS", "8"))
+BLUETOOTH_AUDIO_PROFILE = _opt("BLUETOOTH_AUDIO_PROFILE", "a2dp")
+BLUETOOTH_AUTO_ROUTE = _opt_bool("BLUETOOTH_AUTO_ROUTE", True)
 
 # TTS
 ELEVENLABS_API_KEY = _req("ELEVENLABS_API_KEY")

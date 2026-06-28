@@ -12,6 +12,7 @@ import config
 import luces
 import micro
 import altavoz
+import bluetooth_audio
 import govee
 import spotify
 import timers
@@ -236,6 +237,91 @@ def cambiar_volumen(delta: int) -> str:
     return "ok" if spotify.volumen(delta) else "fallo: no hay reproducción activa para cambiar volumen"
 
 
+def buscar_parlantes_bluetooth() -> str:
+    """Escanea dispositivos Bluetooth cercanos y devuelve los parlantes o auriculares detectados. Úsala cuando nico pida buscar, escanear o descubrir un parlante Bluetooth cercano."""
+    try:
+        dispositivos = bluetooth_audio.escanear_dispositivos()
+    except Exception as e:
+        return f"fallo: {e}"
+    if not dispositivos:
+        return "no encontré parlantes Bluetooth cerca"
+    return "; ".join(
+        f"{d['name']} ({d['mac']})"
+        + (" conectado" if d.get("connected") else "")
+        + (" emparejado" if d.get("paired") else "")
+        for d in dispositivos[:10]
+    )
+
+
+def listar_parlantes_bluetooth() -> str:
+    """Lista los parlantes Bluetooth ya detectados o emparejados. Úsala cuando nico pregunte qué dispositivos Bluetooth hay, cuáles están cerca o cuál está conectado."""
+    try:
+        dispositivos = bluetooth_audio.listar_dispositivos()
+        salida = bluetooth_audio.resumen_salida_activa()
+    except Exception as e:
+        return f"fallo: {e}"
+    if not dispositivos:
+        return f"no veo parlantes Bluetooth ahora mismo. Salida actual: {salida}"
+    lista = "; ".join(
+        f"{d['name']} ({d['mac']})"
+        + (" conectado" if d.get("connected") else "")
+        + (" emparejado" if d.get("paired") else "")
+        + (" confiable" if d.get("trusted") else "")
+        for d in dispositivos[:10]
+    )
+    return f"{lista}. Salida actual: {salida}"
+
+
+def conectar_parlante_bluetooth(nombre_o_mac: str) -> str:
+    """Conecta un parlante Bluetooth y lo deja como salida de audio preferida. Úsala cuando nico ya haya elegido un dispositivo concreto de la lista.
+
+    Args:
+        nombre_o_mac: Nombre visible del parlante o su dirección MAC.
+    """
+    try:
+        estado = bluetooth_audio.conectar_dispositivo(nombre_o_mac)
+        return f"ok: conectado a {estado['name']} ({estado['mac']}). Lo dejo como parlante preferido y salida de audio"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def desconectar_parlante_bluetooth(nombre_o_mac: str) -> str:
+    """Desconecta un parlante Bluetooth concreto por nombre o MAC. Úsala cuando nico diga que corte un parlante específico o deje de usar uno en particular.
+
+    Args:
+        nombre_o_mac: Nombre visible del parlante o su dirección MAC.
+    """
+    try:
+        estado = bluetooth_audio.desconectar_dispositivo(nombre_o_mac)
+        return f"ok: desconecté {estado['name']} ({estado['mac']})"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def parlante_bluetooth_actual() -> str:
+    """Dice qué salida de audio está activa ahora mismo y cuál quedó guardada como parlante Bluetooth preferido. Úsala cuando nico pregunte qué parlante está conectado o por dónde va a sonar Cuántico."""
+    try:
+        info = bluetooth_audio.dispositivo_conectado()
+    except Exception as e:
+        return f"fallo: {e}"
+    if info["active_kind"] == "bluetooth":
+        base = f"salida activa: Bluetooth {info['active_label']} ({info['active_mac']})"
+    else:
+        base = f"salida activa: altavoz local {info['local_device']}"
+    if info["preferred_name"]:
+        return f"{base}. Preferido guardado: {info['preferred_name']} ({info['preferred_mac']})"
+    return base
+
+
+def usar_altavoz_integrado() -> str:
+    """Vuelve la salida de audio al altavoz local I2S/VoiceHAT y desconecta el parlante Bluetooth activo. Úsala cuando nico pida volver al parlante integrado o dejar de usar Bluetooth."""
+    try:
+        bluetooth_audio.usar_altavoz_integrado()
+        return f"ok: vuelvo al altavoz local {config.ALSA_PLAYBACK_DEVICE}"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
 def crear_temporizador(minutos: float, etiqueta: str = "") -> str:
     """Crea un temporizador que sonará al pasar los minutos indicados. Úsalo cuando ya tengas una duración numérica convertida a minutos. Para lenguaje natural como "en 30 segundos", "en 2 horas" o "mañana a las 7am", prefiere `programar_aviso`.
 
@@ -420,6 +506,8 @@ TOOLS = [
     encender_luces_casa, apagar_luces_casa, cambiar_color_luces, cambiar_brillo_luces,
     reproducir_musica, poner_playlist, reanudar_musica, pausar_musica,
     siguiente_cancion, cancion_anterior, cambiar_volumen,
+    buscar_parlantes_bluetooth, listar_parlantes_bluetooth, conectar_parlante_bluetooth,
+    desconectar_parlante_bluetooth, parlante_bluetooth_actual, usar_altavoz_integrado,
     programar_aviso, crear_temporizador, crear_alarma_hora, listar_temporizadores, cancelar_temporizador,
     eventos_de_hoy, eventos_de_la_semana, nuevo_evento,
     analiticas_youtube, ultimos_videos,

@@ -2,337 +2,462 @@
 
 [![Cuántico](hardware/cuantico.png)](https://youtu.be/RmWtU8Pogws)
 
-> 🎬 **Mira el vídeo de la build en YouTube:** [youtu.be/RmWtU8Pogws](https://youtu.be/RmWtU8Pogws)
+> 🎬 Video de la build: [youtu.be/RmWtU8Pogws](https://youtu.be/RmWtU8Pogws)
 
-Asistente de voz hardware con personalidad. Vive dentro de un cilindro de aluminio sobre tu mesa, con un anillo de NeoPixels que cambia de color según su estado de ánimo, y se cree el mejor — habla como Deadpool pasado por España, odia a Alexa y te vacila con cariño.
+Cuántico es un asistente de voz con hardware, personalidad configurable y herramientas reales. Corre en una Raspberry Pi, escucha con wake word, habla por ElevenLabs, razona con OpenRouter y controla luces, música, calendario, YouTube, timers, memoria persistente y audio Bluetooth.
 
-Es un proyecto **open source y replicable** por unos **50 €** en componentes. Corre en una Raspberry Pi, usa OpenRouter como gateway del LLM, Deepgram para entenderte, ElevenLabs para hablar, y se integra con Spotify, Govee, Google Calendar y YouTube.
+No está pensado para sonar neutro. Está pensado para tener carácter, cambiar de actitud con LEDs y sentirse más criatura de taller que producto pulido.
 
-> **No es un asistente serio.** Si quieres uno educado, pon Alexa. Cuántico está hecho para tener carácter.
+## Estado actual
 
----
+- Backend LLM: OpenRouter, no Gemini.
+- STT: Deepgram.
+- TTS: ElevenLabs.
+- Wake word: openWakeWord.
+- Salida principal: I2S/VoiceHAT con fallback y soporte para parlantes Bluetooth.
+- Personalidad, emociones y luces: perfiles editables en JSON.
+- Timers, estado Bluetooth, recuerdos y tokens: persistentes en `state/`.
 
-## Qué sabe hacer
+## Qué hace hoy
 
-- **Conversación natural** con wake word (sin pulsar nada).
-- **Casa**: encender/apagar luces Govee, cambiar color y brillo.
-- **Música**: Spotify por canción, artista, género o ambiente. Pausar, saltar, volumen.
-- **Timers y alarmas** persistentes (sobreviven a reinicios).
-- **Calendario**: ver tu agenda, crear eventos.
-- **YouTube**: analíticas del canal y últimos vídeos.
-- **Memoria**: recuerda hechos sobre ti entre conversaciones (SQLite).
-- **Modo llamada**: conversa con un humano por teléfono en altavoz (reservar mesa, pedir cita).
-- **Búsqueda web** integrada para consultas actuales.
-
----
-
-## Hardware
-
-### Lista de materiales
-
-| Componente | Modelo / specs | Notas |
-|---|---|---|
-| SBC | **Raspberry Pi Zero 2W** | Cerebro. Cualquier Pi con GPIO vale, pero el Zero 2W cabe en el cilindro. |
-| Tarjeta SD | **microSD 32GB Clase 10** (ej: Netac A1 U1 V10) | Para Raspberry Pi OS Lite. |
-| Micrófono | **INMP441** (módulo MEMS I2S omnidireccional, 24-bit) | Comunicación I2S, no USB. |
-| Amplificador audio | **MAX98357A** (I2S → altavoz, mono, 3.2W) | Necesario para sacar audio I2S al altavoz analógico. |
-| Altavoz | **3W 4Ω** con conector JST-PH2.0 (ej: QUARKZMAN) | Va al amplificador, no directo a la Pi. |
-| Anillo LED | **WS2812B / NeoPixel, 12 LEDs, 50mm, 5V** | Anillo del "reactor". |
-| Tornillería | Kit de **separadores hex M2.5 macho-hembra de latón** | Para montar la Pi y las placas dentro del cilindro. |
-| Cableado | **Cable 26 AWG** | Suficiente para señal I2S y alimentación a estos consumos. |
-| Fijación | **Cinta de doble cara** | Para pegar las placas al chasis interno. |
-| Carcasa | Cilindro de aluminio aeroespacial (opcional) | Lo que tengas a mano: PVC, impresión 3D, lata. |
-
-**Coste total aproximado: ~50 €** con la carcasa impresa en 3D. Si optas por mecanizar el cilindro en aluminio (CNC) el coste sube bastante según el taller.
-
-Opcional (no son parte del hardware central, pero los usa el software):
-
-- Bombillas **Govee** compatibles con la Developer API v1.
-
----
-
-## Esquema de conexiones
-
-> Todos los números son la **posición física del pin** en la cabecera GPIO de la Pi Zero 2W (1–40), no el número GPIO BCM.
-
-### 🎤 Micrófono INMP441 (I2S)
-
-| Pin del INMP441 | Pin físico Pi | Función |
-|---|---|---|
-| VDD | **1** (3.3V) | Alimentación |
-| GND | **39** | Tierra |
-| L/R | (puenteado al GND del propio módulo) | Selección de canal (izquierdo) |
-| SCK | **12** | Bit clock (BCLK) |
-| WS  | **35** | Word select (LRCLK) |
-| SD  | **38** | Datos (entrada al Pi) |
-
-### 🔊 Amplificador MAX98357A (I2S)
-
-| Pin del MAX98357A | Pin físico Pi | Función |
-|---|---|---|
-| VIN / VDD | **4** (5V) | Alimentación |
-| GND | **34** | Tierra |
-| BCLK | **12** | Bit clock (compartido con el micro) |
-| LRC  | **35** | Word select (compartido con el micro) |
-| DIN  | **40** | Datos (salida del Pi) |
-| SD   | **36** | Mute / control de silencio |
-
-### 🔈 Altavoz
-
-| Cable del altavoz | Conexión |
-|---|---|
-| Positivo (+) | Salida **OUT+** del MAX98357A |
-| Negativo (−) | Salida **OUT−** del MAX98357A |
-
-### 🌈 Anillo NeoPixel (WS2812B, 12 LEDs)
-
-| Pin del anillo | Pin físico Pi |
-|---|---|
-| 5V (VCC)  | **2** (mismo riel de 5V que la alimentación general) |
-| GND       | **6** |
-| DIN (datos) | **32** |
-
-> **Nota I2S:** Para que el micro y el amplificador funcionen, hay que activar el overlay `i2s-mmap` en `/boot/firmware/config.txt` (o `/boot/config.txt` en Raspberry Pi OS antiguos). Consulta la guía de Adafruit del MAX98357A y del INMP441 para los pasos concretos de configuración del kernel.
-
----
-
-## Carcasa imprimible en 3D
-
-Las piezas están en [`hardware/`](hardware/), separadas por método de fabricación:
-
-**Impresión 3D** — `hardware/3d printing/`:
-
-| Pieza | Para qué |
-|---|---|
-| `Base_Cuantico.stl` | Base inferior del cilindro. |
-| `Intermedio_Cuantico.stl` | Cuerpo central — sujeta el amplificador, el micro y el altavoz. |
-| `Tapa_Cuantico.stl` | Tapa superior. La Raspberry Pi se pega con cinta de doble cara en su cara interior. |
-| `Luces_Base.stl` | Soporte del anillo NeoPixel. |
-| `Luces_Tapa.stl` | Difusor translúcido del anillo (imprime en filamento blanco/transparente). |
-
-**Mecanizado CNC** — `hardware/CNC/` (formato STEP, para mecanizar las piezas estructurales del cilindro de aluminio):
-
-- `Base.stp`, `Intermedio.stp`, `Tapa.stp`
-
-> Si solo vas a imprimir en 3D, usa los `.stl`. Los `.stp` son para mecanizar en aluminio si quieres el acabado original.
-
-**Recomendaciones de impresión:**
-
-- Material: **PLA** o **PETG**, 0.2 mm de altura de capa.
-- `Luces_Tapa.stl`: imprime en filamento blanco/translúcido y con relleno bajo (~10–15%) para que difunda bien la luz del NeoPixel.
-- El resto de piezas: 20% de relleno y soportes solo donde la pieza lo necesite (revisa en tu slicer).
-- Ensamblaje con los separadores M2.5 indicados en la lista de materiales.
-
----
+- Conversación por voz con wake word.
+- Seguimiento sin wake word durante unos segundos después de cada respuesta.
+- Búsqueda web integrada para datos actuales.
+- Function calling local con tools Python.
+- Control de luces Govee: on/off, color y brillo.
+- Spotify: canción, playlist por vibe, play/pause, siguiente, anterior, volumen.
+- Timers y alarmas persistentes, incluyendo lenguaje natural:
+  - `en 30 segundos`
+  - `en 5 minutos`
+  - `en 2 horas`
+  - `mañana a las 7am`
+  - `a las 18:30`
+- Google Calendar: ver hoy, ver semana, crear eventos.
+- YouTube Analytics: métricas y últimos videos.
+- Memoria persistente con SQLite.
+- Modo llamada por altavoz/micro físico.
+- Perfiles de personalidad y reactor LED configurables.
+- Audio Bluetooth por voz:
+  - buscar
+  - listar
+  - conectar
+  - desconectar
+  - consultar cuál está activo
+  - volver al altavoz integrado
 
 ## Arquitectura
 
+```text
+Wake word / VAD / audio
+    micro.py
+        ↓
+Deepgram STT
+        ↓
+main.py
+  - loop principal
+  - tools
+  - memoria
+  - timers
+  - modo llamada
+        ↓
+openrouter_client.py
+  - chat
+  - tool calling
+  - web search
+        ↓
+altavoz.py
+  - ElevenLabs TTS
+  - ruta I2S o Bluetooth
+        ↓
+luces.py
+  - reactor LED según estado/emoción
 ```
-                ┌──────────────────────────────────────┐
-                │  Raspberry Pi  (src/main.py)         │
-                │                                      │
-   wake word →  │  micro.py  →  Deepgram (STT)         │
-                │      ↓                               │
-                │  OpenRouter (LLM + tools + web)      │
-                │      ↓                               │
-                │  altavoz.py  →  ElevenLabs (TTS)     │
-                │      ↓                               │
-                │  luces.py  →  NeoPixel ring          │
-                └────────┬─────────────────────────────┘
-                         │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-         Govee API    Spotify    Google APIs
-                    (Raspotify)
-```
 
----
+Servicios y módulos auxiliares:
 
-## Setup rápido
+- `govee.py`: Developer API v1
+- `spotify.py`: Spotify Connect / Raspotify
+- `calendario.py`: Google Calendar
+- `youtube_stats.py`: YouTube Data + Analytics
+- `recuerdos.py`: SQLite
+- `timers.py`: scheduler persistente
+- `bluetooth_audio.py`: BlueZ + BlueALSA
+- `cuantico_profiles.py` + `cuantico_profiles.json`: prompts, emociones y luces
 
-### 1. Flashea Raspberry Pi OS Lite
+## Hardware
 
-Usa **Raspberry Pi Imager** y elige *Raspberry Pi OS Lite (64-bit)*. En el menú de configuración previo:
+### BOM base
 
-- Activa **SSH** (con autenticación por contraseña o por clave).
-- Configura tu **red Wi-Fi** y la **zona horaria** (Europe/Madrid).
-- Pon `cuantico` como **hostname** (esto coincide con el `DEVICE_HINTS` de Raspotify del proyecto).
+| Componente | Modelo / idea | Notas |
+|---|---|---|
+| SBC | Raspberry Pi Zero 2 W | La build original apunta a esta. |
+| microSD | 16–32 GB clase 10 | Mejor si es decente; Cuántico genera logs y estado persistente. |
+| Micrófono | INMP441 I2S | Captura principal. |
+| Amplificador | MAX98357A I2S | Salida mono al parlante. |
+| Parlante | 3W 4Ω | Conectado al MAX98357A. |
+| LEDs | NeoPixel / WS2812B | Reactor visual. |
+| Bluetooth | Integrado en la Pi | Para parlantes BT opcionales. |
 
-### 2. Activa I2S, NeoPixel y dependencias del sistema
+### Cableado usado en el proyecto
 
-Conéctate por SSH a la Pi y ejecuta:
+> Los números son pines físicos del header, no BCM.
+
+#### INMP441
+
+| Pin | Pi | Función |
+|---|---|---|
+| VDD | 1 | 3.3V |
+| GND | 39 | GND |
+| L/R | a GND | Canal izquierdo |
+| SCK | 12 | BCLK |
+| WS | 35 | LRCLK |
+| SD | 38 | Datos |
+
+#### MAX98357A
+
+| Pin | Pi | Función |
+|---|---|---|
+| VIN / VDD | 4 | 5V |
+| GND | 34 | GND |
+| BCLK | 12 | I2S clock |
+| LRC | 35 | I2S word select |
+| DIN | 40 | Datos hacia el ampli |
+| SD | 36 | Mute |
+
+#### NeoPixel
+
+| Pin | Pi |
+|---|---|
+| 5V | 2 |
+| GND | 6 |
+| DIN | 32 |
+
+### Carcasa
+
+El repo incluye piezas en `hardware/` para impresión 3D y CNC. Si solo te interesa replicar software, puedes ignorarlo.
+
+## Dependencias del sistema
+
+En Raspberry Pi OS Lite:
 
 ```bash
 sudo apt update
-sudo apt install -y git python3-venv python3-pip sox alsa-utils tmux
-# Raspotify (Spotify Connect)
+sudo apt install -y \
+  git python3-venv python3-pip \
+  sox libsox-fmt-mp3 alsa-utils tmux \
+  bluez bluez-alsa-utils
+```
+
+Spotify Connect opcional:
+
+```bash
 curl -sSL https://dtcooper.github.io/raspotify/install.sh | sh
 ```
 
-Edita `/boot/firmware/config.txt` (o `/boot/config.txt` en versiones antiguas) y añade al final:
+### Overlay de audio recomendado
+
+En `/boot/firmware/config.txt` o `/boot/config.txt`:
 
 ```ini
-# Audio I2S (INMP441 mic + MAX98357A amp)
 dtparam=i2s=on
 dtoverlay=googlevoicehat-soundcard
-
-# Desactivar audio analógico interno (libera GPIO y evita conflictos)
 dtparam=audio=off
 ```
 
-Reinicia la Pi (`sudo reboot`). Verifica que ALSA ve el dispositivo I2S:
+Reinicia:
 
 ```bash
-arecord -l   # debe listar el snd_rpi_simple_card o similar
+sudo reboot
+```
+
+Comprueba:
+
+```bash
+arecord -l
 aplay -l
 ```
 
-### 3. Clona y prepara el entorno
+## Instalación
+
+### 1. Clona el repo
 
 ```bash
-git clone <tu-fork>.git Cuantico
-cd Cuantico
+git clone <tu-repo> ~/cuantico
+cd ~/cuantico
+```
+
+### 2. Crea el entorno virtual
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Variables de entorno
+### 3. Crea `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Edita `.env` y rellena las API keys (todos los enlaces para conseguirlas están en el propio `.env.example`).
+### 4. Rellena variables mínimas
 
-### 5. Wake word
+Variables imprescindibles para arrancar:
 
-Cuántico usa [openWakeWord](https://github.com/dscripka/openWakeWord). El repo incluye **`cuantico.onnx`** ya entrenado para responder a la palabra "Cuántico" — apunta `WAKE_MODEL_PATH` en tu `.env` a su ruta absoluta y listo:
+- `OPENROUTER_API_KEY`
+- `ELEVENLABS_API_KEY`
+- `DEEPGRAM_API_KEY`
+- `GOVEE_API_KEY`
+- `WAKE_MODEL_PATH`
 
-```bash
-WAKE_MODEL_PATH=/home/<tu_usuario>/Cuantico/cuantico.onnx
+Variables muy recomendables:
+
+- `CUANTICO_PROFILE`
+- `CUANTICO_TIMEZONE`
+- `USER_SHORT_NAME`
+- `USER_FULL_NAME`
+
+Variables opcionales:
+
+- Spotify
+- Google Calendar / YouTube
+- Bluetooth
+- `OPENROUTER_HTTP_REFERER`
+
+## Variables de entorno
+
+### Identidad y perfil
+
+```env
+USER_SHORT_NAME=Nico
+USER_FULL_NAME=Nicolas
+CUANTICO_PROFILE=argentino
+CUANTICO_TIMEZONE=America/Argentina/Buenos_Aires
 ```
 
-Si prefieres otra palabra de activación:
+### LLM
 
-- **Entrena el tuyo** (~30 min en Colab gratis): sigue la [guía oficial](https://github.com/dscripka/openWakeWord/blob/main/docs/custom_models.md). Genera tu propio `.onnx` y reemplaza el del repo.
-- **Usa uno pre-entrenado** del repo de openWakeWord (`hey_jarvis`, `alexa`, etc.).
+```env
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=openai/gpt-4o-mini
+OPENROUTER_CALL_MODEL=openai/gpt-4o-mini
+OPENROUTER_HTTP_REFERER=
+```
 
-### 6. OAuth de Google (Calendar + YouTube)
+### Audio
 
-1. Ve a [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials).
-2. Crea un proyecto, activa **Calendar API**, **YouTube Data API v3** y **YouTube Analytics API**.
-3. Crea credenciales **OAuth 2.0 client ID** tipo **Desktop app**.
-4. Descarga el JSON y guárdalo como `state/google_client.json`.
-5. Lanza Cuántico **una vez en el Mac** (no en la Pi, no tiene navegador): se abrirá el navegador, autoriza, y se generará `state/google_token.json`.
-6. Copia `state/google_token.json` a la Pi vía `scp`.
+```env
+ELEVENLABS_API_KEY=
+ELEVENLABS_VOICE_ID=JBFqnCBsd6RMkjVDRZzb
+ALSA_PLAYBACK_DEVICE=plughw:0,0
+BLUETOOTH_AUTO_ROUTE=true
+BLUETOOTH_AUDIO_PROFILE=a2dp
+BLUETOOTH_SCAN_SECONDS=8
+```
 
-### 7. Spotify
+### STT y wake word
 
-1. Crea una app en [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard).
-2. En "Edit settings" añade `http://127.0.0.1:8888/callback` como Redirect URI.
-3. Copia Client ID y Secret a `.env`.
-4. Raspotify ya lo instalaste en el paso 2 — se publicará como dispositivo Spotify Connect con el hostname de la Pi (`cuantico`).
-5. Primera ejecución: abrirá un navegador para que apruebes los scopes. En la Pi sin pantalla, ejecuta primero en el Mac y copia `.spotify_cache` con `scp`.
+```env
+DEEPGRAM_API_KEY=
+WAKE_MODEL_PATH=/home/nicolas/cuantico/cuantico.onnx
+```
 
-### 8. Govee
+También puedes usar un modelo preentrenado de openWakeWord, por ejemplo `hey_jarvis`, si apuntas la ruta correcta dentro de tu entorno.
 
-1. Solicita una API key en [developer.govee.com](https://developer.govee.com) (te llega por email en ~1 día).
-2. Pégala en `.env` como `GOVEE_API_KEY`.
+### Govee
 
-### 9. Lanza Cuántico
+```env
+GOVEE_API_KEY=
+```
+
+### Spotify
+
+```env
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
+SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
+```
+
+### Google / YouTube
+
+```env
+GOOGLE_CLIENT_SECRETS_PATH=state/google_client.json
+GOOGLE_TOKEN_PATH=state/google_token.json
+YOUTUBE_CHANNEL_ID=
+```
+
+## Wake word
+
+Cuántico usa `openwakeword`. En el repo hay un modelo `cuantico.onnx`, pero también puedes usar uno preentrenado o entrenar el tuyo.
+
+Ejemplo:
+
+```env
+WAKE_MODEL_PATH=/home/nicolas/cuantico/cuantico.onnx
+```
+
+## Primer arranque manual
+
+En la Raspberry:
 
 ```bash
 sudo .venv/bin/python3 src/main.py
 ```
 
-> `sudo` es **obligatorio en la Pi** porque NeoPixel necesita acceso a `/dev/mem`. En el Mac (sin LEDs físicos) no hace falta.
+> En la Pi el `sudo` es importante por NeoPixel y acceso a hardware. En un entorno sin LEDs físicos no siempre hace falta.
 
----
+## Spotify
 
-## Ejecutar como servicio en la Pi
+`spotify.py` usa `spotipy` y busca un dispositivo cuyo nombre contenga `raspotify` o `cuantico`.
 
-```bash
-cp cuantico.service.example cuantico.service
-# edita cuantico.service y reemplaza <USER> por tu usuario y la ruta por la real
-sudo cp cuantico.service /etc/systemd/system/cuantico.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now cuantico
-journalctl -u cuantico -f   # ver logs
-```
+Flujo real:
 
----
+- si Spotify no está configurado, se desactiva solo
+- si está configurado, intenta descubrir el dispositivo Connect
+- si no lo encuentra, deja warning en consola
 
-## Personalización
+Primera autorización:
 
-### Cambia la personalidad
+- Spotipy usa flujo OAuth con `open_browser=False`
+- en consola te mostrará una URL
+- debes abrirla, autorizar y pegar la URL final redirigida
 
-Ahora la personalidad no se toca en `src/main.py`: se configura desde `.env` y `src/cuantico_profiles.json`.
+Se guarda en:
 
-1. Elige el perfil activo en `.env`:
+- `.spotify_cache`
 
-```env
-CUANTICO_PROFILE=argentino
-```
+## Google Calendar y YouTube
 
-Perfiles incluidos:
+`calendario.py` y `youtube_stats.py` comparten el mismo token OAuth.
 
-- `argentino`
-- `espanol`
-- `tanguero`
+Primera autorización:
 
-2. Reinicia Cuántico para aplicar el cambio.
+1. Crea un OAuth Client tipo Desktop en Google Cloud.
+2. Guarda el JSON como `state/google_client.json`.
+3. Ejecuta una vez en una máquina con navegador.
+4. Se generará `state/google_token.json`.
+5. Copia ese token a la Pi.
 
-### Edita o crea perfiles
+Si cambias scopes:
 
-Todo vive en `src/cuantico_profiles.json`.
+- borra `state/google_token.json`
+- vuelve a autorizar
 
-Cada perfil puede definir:
+## Timers y alarmas
 
-- `main_prompt`: personalidad principal del asistente
-- `call_prompt`: tono del modo llamada
-- `default_emotion`: emoción por defecto si no detecta otra
-- `emotion_rules`: palabras/frases que disparan emociones
-- `light_states`: colores, efectos y velocidades del reactor
+Cuántico soporta dos tipos:
 
-Ejemplo mínimo de selección:
+- timer relativo
+- alarma absoluta
 
-```env
-CUANTICO_PROFILE=tanguero
-```
+Internamente todo se persiste en:
 
-Ejemplo de estructura de un perfil:
+- `state/timers.json`
 
-```json
-{
-  "label": "Mi perfil",
-  "default_emotion": "sarcasmo",
-  "main_prompt": "Sos Cuantico...",
-  "call_prompt": "Estas en MODO LLAMADA...",
-  "emotion_rules": [
-    { "name": "buena_onda", "triggers": ["gracias", "genial"] }
-  ],
-  "light_states": {
-    "buena_onda": {
-      "effect": "pulse",
-      "color": [0, 220, 70],
-      "speed": 2.5
-    }
-  }
-}
-```
+El scheduler:
 
-Para crear un perfil nuevo:
+- sobrevive a reinicios
+- carga timers existentes al arrancar
+- dispara callbacks de voz al vencer
+- si algo venció mientras estaba apagado, lo levanta al iniciar
 
-1. Duplica uno dentro de `src/cuantico_profiles.json`
-2. Ponle una nueva clave, por ejemplo `cyberpunk`
-3. En `.env`, cambia:
+Ejemplos de frases soportadas:
 
-```env
-CUANTICO_PROFILE=cyberpunk
-```
+- `avisame en 30 segundos`
+- `poné una alarma en 5 minutos`
+- `avisame en 2 horas`
+- `poné una alarma mañana a las 7am`
+- `poné una alarma a las 18:30`
 
-Efectos de luces soportados:
+## Memoria persistente
+
+La memoria no es historial de chat. Son hechos persistentes.
+
+Se guarda en:
+
+- `state/recuerdos.db`
+
+Sirve para:
+
+- gustos
+- personas importantes
+- proyectos
+- datos estables del usuario
+
+No debería usarse para:
+
+- secretos
+- contraseñas
+- datos de tarjeta
+- cosas efímeras que dejan de ser verdad enseguida
+
+## Audio
+
+### Ruta local
+
+La reproducción local usa:
+
+- `sox` para filtrar/normalizar
+- `aplay` para sacar el audio
+- GPIO16 para mutear/desmutear el ampli de la VoiceHAT
+
+### Sonido de arranque
+
+Si existe `test.wav` en la raíz del repo, Cuántico puede reproducirlo al arrancar.
+
+### Bluetooth
+
+El control Bluetooth está en `src/bluetooth_audio.py` y usa:
+
+- `bluetoothctl`
+- BlueZ
+- BlueALSA
+
+Estado persistente:
+
+- `state/bluetooth_audio.json`
+
+Funciones soportadas:
+
+- buscar dispositivos
+- listar dispositivos
+- conectar uno por nombre o MAC
+- desconectar uno concreto
+- consultar cuál está activo
+- volver al altavoz integrado
+- recordar el parlante Bluetooth preferido
+
+Frases útiles:
+
+- `buscá parlantes bluetooth`
+- `listá los parlantes bluetooth`
+- `conectá el JBL Flip`
+- `desconectá el JBL Flip`
+- `qué parlante bluetooth está conectado`
+- `volvé al altavoz integrado`
+
+Si el parlante BT no está conectado en el momento de hablar:
+
+- Cuántico vuelve al `ALSA_PLAYBACK_DEVICE` local
+
+## Reactor LED y emociones
+
+`luces.py` no tiene efectos fijos hardcodeados por personalidad. El reactor se alimenta desde `cuantico_profiles.json`.
+
+Estados base del sistema:
+
+- `esperando`
+- `escuchando`
+- `pensando`
+- `apagado`
+
+Estados emocionales:
+
+- dependen del perfil activo
+- se detectan por triggers en la respuesta de Cuántico
+- controlan color, patrón y velocidad
+
+Efectos soportados:
 
 - `pulse`
 - `spinner`
@@ -342,74 +467,243 @@ Efectos de luces soportados:
 - `alternate`
 - `off`
 
-### Cambia la voz
+## Perfiles, prompts y personalidad
 
-En `.env` cambia `ELEVENLABS_VOICE_ID` por el ID de cualquier voz de tu librería de ElevenLabs (puedes clonar la tuya o usar las públicas).
+Los prompts ya no viven en `main.py`. Viven en:
 
-### Cambia el wake word
+- `src/cuantico_profiles.json`
+- `src/cuantico_profiles.py`
 
-Entrena un `.onnx` nuevo en Colab con la palabra que quieras y apunta `WAKE_MODEL_PATH` a él.
+Un perfil define:
 
-### Añade tools
+- `label`
+- `main_prompt`
+- `call_prompt`
+- `default_emotion`
+- `emotion_rules`
+- `light_states`
+- alias de estados si hace falta
 
-Define una función Python con docstring claro en `src/main.py` y añádela a la lista `TOOLS`. OpenRouter la expone al modelo vía function calling.
+Perfiles incluidos hoy:
 
----
+- `argentino`
+- `espanol`
+- `tanguero`
+
+Selección:
+
+```env
+CUANTICO_PROFILE=tanguero
+```
+
+Para crear uno nuevo:
+
+1. Duplica un perfil en `src/cuantico_profiles.json`
+2. Ponle una nueva clave
+3. Cambia `CUANTICO_PROFILE`
+4. Reinicia Cuántico
+
+## Modo llamada
+
+`llamada.py` monta un modo especial para hablar con otra persona por teléfono usando el móvil en altavoz al lado del dispositivo.
+
+Flujo:
+
+1. El usuario activa la intención de llamada.
+2. Cuántico responde normal.
+3. Al terminar de hablar entra en modo llamada.
+4. Usa un prompt específico, más profesional.
+5. Escucha y responde por streaming.
+6. Sale por:
+   - marcador `[FIN_LLAMADA]`
+   - silencio largo
+   - timeout global
+   - orden explícita de colgar
+
+## Servicio systemd
+
+El repo incluye:
+
+- `cuantico.service`
+
+Instalación:
+
+```bash
+sudo cp ~/cuantico/cuantico.service /etc/systemd/system/cuantico.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now cuantico
+```
+
+Comandos útiles:
+
+```bash
+systemctl status cuantico
+journalctl -u cuantico -f
+sudo systemctl restart cuantico
+sudo systemctl stop cuantico
+```
+
+El servicio actual:
+
+- arranca tras red, sonido y Bluetooth
+- corre como `root`
+- usa `/home/nicolas/cuantico` como ejemplo de ruta
+
+Ajústalo si tu usuario o ruta son distintos.
+
+## Logs y depuración
+
+Además de `journalctl`, Cuántico escribe trazas estructuradas en:
+
+- `state/unexpected-process-exit.log`
+
+Se instrumentan, entre otras cosas:
+
+- arranque y cierre
+- excepciones no manejadas
+- excepciones de threads
+- señales
+- wake word
+- Deepgram
+- OpenRouter
+- TTS
+- timers
+- callbacks de alarma
+- Bluetooth
+
+Archivos de ayuda incluidos:
+
+- `debug-unexpected-process-exit.md`
+- `debug-timer-alarm-exit.md`
+
+## Estado persistente generado
+
+Durante el uso se crean o actualizan estos archivos:
+
+- `state/recuerdos.db`
+- `state/timers.json`
+- `state/bluetooth_audio.json`
+- `state/google_client.json`
+- `state/google_token.json`
+- `state/unexpected-process-exit.log`
+
+Y también:
+
+- `.spotify_cache`
 
 ## Estructura del repo
 
-```
+```text
 .
 ├── README.md
 ├── LICENSE
 ├── requirements.txt
 ├── .env.example
-├── cuantico.service.example  # systemd unit para la Pi
+├── cuantico.service
+├── cuantico.onnx
+├── cuantico.onnx.data
+├── debug-timer-alarm-exit.md
+├── debug-unexpected-process-exit.md
 ├── hardware/
-│   ├── 3d printing/          # STL para impresión 3D
-│   ├── CNC/                  # STEP para mecanizar el cilindro de aluminio
-│   └── cuantico.png          # foto de referencia del montaje final
 └── src/
-    ├── main.py              # entry point — system prompt + tools + loop principal
-    ├── config.py            # carga centralizada de .env
-    ├── cuantico_profiles.py # loader de perfiles
-    ├── cuantico_profiles.json # prompts, emociones y luces por perfil
-    ├── micro.py             # captura audio + wake word + STT (Deepgram)
-    ├── altavoz.py           # TTS (ElevenLabs) con streaming
-    ├── luces.py             # animaciones del NeoPixel ring
-    ├── govee.py             # control de bombillas Govee
-    ├── spotify.py           # Spotify Connect vía Raspotify
-    ├── timers.py            # timers/alarmas persistentes
-    ├── calendario.py        # Google Calendar (OAuth Desktop)
-    ├── youtube_stats.py     # YouTube Analytics (mismo OAuth)
-    ├── recuerdos.py         # memoria persistente en SQLite
-    └── llamada.py           # modo llamada (humano por móvil en altavoz)
+    ├── altavoz.py
+    ├── bluetooth_audio.py
+    ├── calendario.py
+    ├── config.py
+    ├── cuantico_profiles.json
+    ├── cuantico_profiles.py
+    ├── govee.py
+    ├── llamada.py
+    ├── luces.py
+    ├── main.py
+    ├── micro.py
+    ├── openrouter_client.py
+    ├── recuerdos.py
+    ├── spotify.py
+    ├── timers.py
+    └── youtube_stats.py
 ```
-
----
 
 ## Troubleshooting
 
-- **"sudo es obligatorio"** → la Pi necesita `/dev/mem` para los NeoPixels. En Mac dev sin LEDs, comenta el `import luces` o stubea el módulo.
-- **`arecord -l` no lista el INMP441** → revisa que añadiste `dtparam=i2s=on` y el overlay correcto en `/boot/firmware/config.txt` y que reiniciaste. Verifica también que el cable del pin L/R va a GND (selecciona canal izquierdo).
-- **Audio del altavoz distorsionado o muy bajo** → ajusta los filtros de `sox` en `src/altavoz.py` (líneas con `highpass`, `bass`, `treble`, `gain`). El altavoz de 3W 4Ω rinde mejor recortando los graves.
-- **Spotify "no device available"** → arranca Raspotify (`sudo systemctl start raspotify`) y verifica que aparece en `src/spotify.py` con el nombre que tenga (ajusta `DEVICE_HINTS`).
-- **Govee "ninguna luz controlable"** → solo bombillas con la **Developer API v1** funcionan; algunos modelos modernos solo van con la API v2 (no soportada todavía).
-- **Wake word no responde** → baja `WAKE_THRESHOLD` en `src/micro.py` (default 0.3). Mira los logs `score wake=…` para calibrar.
-- **OAuth falla en la Pi** → la Pi no puede abrir navegador. Autoriza primero en el Mac y copia `state/google_token.json` con scp.
-- **NeoPixels no se encienden** → asegúrate de lanzar con `sudo` y de que `dtparam=audio=off` está activo (el chip de audio de la Pi comparte timer con el WS2812B).
+### No suena la voz pero `test.wav` sí
 
----
+Te falta casi seguro:
 
-## Stack y créditos
+```bash
+sudo apt install -y libsox-fmt-mp3
+```
 
-- **LLM Gateway**: [OpenRouter](https://openrouter.ai/) con modelos compatibles con tool calling y búsqueda web
-- **STT**: [Deepgram Nova 3](https://deepgram.com/)
-- **TTS**: [ElevenLabs Turbo v2.5](https://elevenlabs.io/)
-- **Wake word**: [openWakeWord](https://github.com/dscripka/openWakeWord)
-- **VAD**: [webrtcvad](https://github.com/wiseman/py-webrtcvad)
+### El micro no abre a 16 kHz
 
----
+Es normal en algunos devices I2S/VoiceHAT. `micro.py` ya hace fallback a 48 kHz y remuestrea a 16 kHz.
+
+### Spotify no aparece
+
+- verifica que `raspotify` esté corriendo
+- revisa el nombre del dispositivo Connect
+- ajusta `DEVICE_HINTS` en `src/spotify.py` si hace falta
+
+### Govee da 401 o no controla nada
+
+- revisa tu API key
+- no todos los modelos sirven con la Developer API v1
+
+### Wake word responde mal
+
+Revisa en `src/micro.py`:
+
+- `WAKE_THRESHOLD`
+- `GANANCIA_MIC`
+
+Y mira los logs `score wake=...`.
+
+### Se cayó la Pi o perdió SSH
+
+Cuando vuelva:
+
+```bash
+journalctl -b -1 -n 200 --no-pager
+journalctl -k -b -1 -n 200 --no-pager
+dmesg -T | tail -n 120
+```
+
+### La base SQLite quedó readonly
+
+Si corriste Cuántico con `sudo`, puede que `state/` quede propiedad de `root`.
+
+Corrígelo si quieres inspeccionarla manualmente:
+
+```bash
+sudo chown -R nicolas:nicolas state
+```
+
+### Bluetooth no conecta
+
+Comprueba:
+
+```bash
+sudo systemctl status bluetooth
+bluetoothctl devices
+bluetoothctl info <MAC>
+```
+
+Y asegúrate de tener:
+
+```bash
+sudo apt install -y bluez bluez-alsa-utils
+```
+
+## Stack
+
+- LLM gateway: [OpenRouter](https://openrouter.ai/)
+- STT: [Deepgram](https://deepgram.com/)
+- TTS: [ElevenLabs](https://elevenlabs.io/)
+- Wake word: [openWakeWord](https://github.com/dscripka/openWakeWord)
+- VAD: [webrtcvad](https://github.com/wiseman/py-webrtcvad)
+- Spotify: [spotipy](https://spotipy.readthedocs.io/)
+- Google APIs: Calendar + YouTube
+- LEDs: NeoPixel / `rpi_ws281x`
 
 ## Licencia
 
