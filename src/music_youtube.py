@@ -168,7 +168,11 @@ def _buscar_videos(query: str, limit: int) -> list[dict]:
             "webpage_url": data.get("webpage_url") or query,
         }]
 
-    target = f"ytsearch{max(1, int(limit))}:{query}"
+    limit = max(1, int(limit))
+    # yt-dlp/YouTube a veces devuelve canales o playlists como primer resultado.
+    # Pedimos más resultados y filtramos manualmente solo videos reproducibles.
+    fetch_limit = max(limit * 5, 8)
+    target = f"ytsearch{fetch_limit}:{query}"
     data = json.loads(
         _run_yt_dlp(["--dump-single-json", "--flat-playlist", "--no-warnings", target])
     )
@@ -177,15 +181,31 @@ def _buscar_videos(query: str, limit: int) -> list[dict]:
     for entry in entries:
         if not entry:
             continue
-        url = entry.get("url") or entry.get("webpage_url") or ""
+        url = (entry.get("url") or entry.get("webpage_url") or "").strip()
         if url and not url.startswith("http"):
             url = f"https://www.youtube.com/watch?v={url}"
         if not url:
             continue
+
+        lower_url = url.lower()
+        es_video = "watch?v=" in lower_url or "youtu.be/" in lower_url
+        if not es_video:
+            _debug_emit(
+                "yt-search-skip-non-video",
+                {
+                    "title": entry.get("title") or url,
+                    "url": url,
+                    "entry_type": entry.get("_type"),
+                },
+            )
+            continue
+
         resultados.append({
             "title": entry.get("title") or url,
             "webpage_url": url,
         })
+        if len(resultados) >= limit:
+            break
     return resultados
 
 
