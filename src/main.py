@@ -2,11 +2,12 @@ import time
 import threading
 import traceback
 import sys
+import os
 import json
 import urllib.request
 import signal
 import atexit
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import config
 import luces
@@ -27,6 +28,11 @@ from openrouter_client import OpenRouterChatSession
 USER_SHORT_NAME = config.USER_SHORT_NAME
 USER_FULL_NAME = config.USER_FULL_NAME
 ACTIVE_PROFILE_NAME = profile.get_active_profile_name()
+_accion_sistema_pendiente: str | None = None
+
+
+class _RestartRequested(Exception):
+    pass
 
 
 # #region debug-point A:runtime-hooks
@@ -202,6 +208,35 @@ def _ejecutar_pendientes_musica():
     return ejecutadas
 
 
+def _programacion_legible(info: dict) -> str:
+    if info.get("segundos") is not None:
+        return f"en {info['segundos']} segundos"
+    try:
+        objetivo = datetime.fromisoformat(info["vence_iso"])
+        return f"para {objetivo.strftime('%d/%m/%Y %H:%M')}"
+    except Exception:
+        return f"para {info.get('vence_iso', 'una fecha futura')}"
+
+
+def _marcar_accion_sistema(accion: str):
+    global _accion_sistema_pendiente
+    _accion_sistema_pendiente = accion
+
+
+def _ejecutar_accion_sistema_pendiente():
+    global _accion_sistema_pendiente
+    accion = _accion_sistema_pendiente
+    _accion_sistema_pendiente = None
+    if not accion:
+        return False
+    _debug_emit("A", "system-action-dispatch", {"action": accion})
+    if accion == "apagar":
+        raise SystemExit(0)
+    if accion == "reiniciar":
+        raise _RestartRequested()
+    return False
+
+
 # Lock que serializa cualquier reproducción TTS. Si Cuántico está hablando y un
 # timer vence, el thread scheduler espera aquí y suelta su mensaje al terminar.
 _tts_lock = threading.Lock()
@@ -216,18 +251,63 @@ def _hablar_stream(generador, emocion):
     with _tts_lock:
         altavoz.hablar_stream(generador, emocion)
 
-def _callback_timer(texto, emocion):
-    """Invocado por el scheduler de timers al vencer uno."""
-    _debug_emit("T", "alarm-callback-enter", {"emotion": emocion, "text_preview": texto[:160]})
+
+def _texto_evento_programado(evento: dict) -> tuple[str, str]:
+    tipo = evento.get("tipo")
+    etiqueta = evento.get("etiqueta") or "sin nombre"
+    payload = evento.get("payload") or {}
+    if tipo == "alarma":
+        return f"Alarma, brodi: {etiqueta}. Despabila.", "cachondeo"
+    if tipo == "recordatorio":
+        mensaje = payload.get("mensaje") or etiqueta
+        return f"Recordatorio, chabón: {mensaje}.", "buena_onda"
+    return f"El tiempo de '{etiqueta}' se acabó, pringao. Muévete.", "cachondeo"
+
+
+def _ejecutar_musica_programada(evento: dict):
+    payload = evento.get("payload") or {}
+    backend = (payload.get("backend") or "").strip().lower() or None
+    query = (payload.get("query") or evento.get("etiqueta") or "").strip()
+    modo = (payload.get("mode") or "cancion").strip().lower()
+    if not query:
+        raise ValueError("la tarea programada de música no trae consulta")
+    music_router.detener_todo()
+    if modo == "playlist":
+        ok = music_router.reproducir_playlist(query, backend=backend)
+    else:
+        ok = music_router.reproducir(query, backend=backend)
+    _debug_emit("T", "scheduled-music-fired", {
+        "query": query,
+        "backend": backend or music_router.backend_actual(),
+        "mode": modo,
+        "ok": ok,
+    })
+    if not ok:
+        _hablar(f"No pude arrancar la música programada: {query}.", "embolado")
+
+
+def _callback_timer(evento: dict):
+    """Invocado por el scheduler de timers al vencer un evento persistido."""
+    _debug_emit("T", "alarm-callback-enter", {
+        "type": evento.get("tipo"),
+        "label": evento.get("etiqueta", ""),
+        "payload": evento.get("payload") or {},
+    })
     try:
-        _hablar(texto, emocion)
-        # Al terminar el aviso, el loop principal puede seguir bloqueado escuchando.
-        # Restauramos el reactor a radar para que no quede clavado en la emocion del timer.
+        if evento.get("tipo") == "musica":
+            _ejecutar_musica_programada(evento)
+        else:
+            texto, emocion = _texto_evento_programado(evento)
+            _hablar(texto, emocion)
         luces.cambiar_estado("esperando")
         _debug_emit("T", "alarm-callback-state-restored", {"state": "esperando"})
-        _debug_emit("T", "alarm-callback-exit", {"emotion": emocion})
+        _debug_emit("T", "alarm-callback-exit", {"type": evento.get("tipo")})
     except Exception as e:
-        _debug_emit("T", "alarm-callback-error", {"emotion": emocion, "error": str(e), "traceback": traceback.format_exc()})
+        _debug_emit("T", "alarm-callback-error", {
+            "type": evento.get("tipo"),
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        })
         raise
 
 
@@ -422,6 +502,18 @@ def usar_altavoz_integrado() -> str:
         return f"fallo: {e}"
 
 
+def apagar_cuantico() -> str:
+    """Apaga solo el proceso de Cuántico al terminar esta respuesta. Úsala cuando nico diga 'apagate', 'chabón desaparece', 'cerrate' o quiera dejar de ejecutar el asistente sin apagar la Raspberry."""
+    _marcar_accion_sistema("apagar")
+    return "ok: me apago al terminar esta respuesta"
+
+
+def reiniciar_cuantico() -> str:
+    """Reinicia solo el proceso de Cuántico al terminar esta respuesta. Úsala cuando nico pida reiniciar, recargar o reiniciar el asistente sin reiniciar toda la Raspberry."""
+    _marcar_accion_sistema("reiniciar")
+    return "ok: me reinicio al terminar esta respuesta"
+
+
 def crear_temporizador(minutos: float, etiqueta: str = "") -> str:
     """Crea un temporizador que sonará al pasar los minutos indicados. Úsalo cuando ya tengas una duración numérica convertida a minutos. Para lenguaje natural como "en 30 segundos", "en 2 horas" o "mañana a las 7am", prefiere `programar_aviso`.
 
@@ -448,7 +540,7 @@ def crear_alarma_hora(hora: str, etiqueta: str = "") -> str:
 
 
 def programar_aviso(cuando: str, etiqueta: str = "") -> str:
-    """Programa timers y alarmas desde lenguaje natural. Úsala SIEMPRE para pedidos como "en 30 segundos", "en 5 minutos", "en 2 horas", "mañana a las 7am", "hoy a las 22:15" o "a las 18:30". Esta tool decide si corresponde un timer relativo o una alarma a hora fija.
+    """Programa timers y alarmas desde lenguaje natural. Úsala SIEMPRE para pedidos como "en 30 segundos", "en 5 minutos", "en 2 horas", "mañana a las 7am", "hoy a las 22:15", "a las 18:30", "el 5 de marzo a las 9" o "5/3". Esta tool decide si corresponde un timer relativo o una alarma a hora fija.
 
     Args:
         cuando: Descripción temporal completa. Ej: 'en 60 segundos', 'en 10 minutos', 'en 2 horas', 'mañana a las 7am', 'hoy a las 22:15', 'a las 18:30'.
@@ -461,6 +553,56 @@ def programar_aviso(cuando: str, etiqueta: str = "") -> str:
         return f"ok: alarma '{etiqueta or info['id']}' para {info['hora']}"
     except Exception as e:
         return f"fallo: no pude interpretar ese horario ({e})"
+
+
+def programar_recordatorio(cuando: str, mensaje: str) -> str:
+    """Programa un recordatorio hablado con fecha u hora en lenguaje natural. Úsala para pedidos como 'recordame el 5 de marzo pagar la luz', 'mañana a las 8 recordame llamar a mamá' o 'en dos horas recordame sacar la pizza'.
+
+    Args:
+        cuando: Momento del recordatorio. Acepta relativo y absoluto, por ejemplo 'en 40 minutos', 'mañana a las 7', '5 de marzo', '05/03/2027 18:30'.
+        mensaje: Qué hay que recordar. Ej: 'pagar la luz', 'llamar a mamá', 'llevar el pasaporte'.
+    """
+    try:
+        info = timers.programar_tarea_desde_texto(
+            cuando,
+            tipo="recordatorio",
+            etiqueta=mensaje,
+            payload={"mensaje": mensaje},
+            default_hour=9,
+            default_minute=0,
+        )
+        return f"ok: recordatorio '{mensaje}' {_programacion_legible(info)}"
+    except Exception as e:
+        return f"fallo: no pude programar ese recordatorio ({e})"
+
+
+def programar_musica(cuando: str, consulta: str, backend: str = "", como: str = "cancion") -> str:
+    """Programa música para una fecha u hora concreta. Úsala cuando nico pida 'poné tal tema mañana a las 7', 'a las 18 reproducí una playlist chill por youtube' o 'el 5 de marzo arrancá Soda Stereo en spotify'.
+
+    Args:
+        cuando: Momento en que debe arrancar la música.
+        consulta: Canción, artista o descripción musical.
+        backend: 'spotify' o 'youtube'. Déjalo vacío para usar el backend musical actual.
+        como: 'cancion' para una búsqueda concreta o 'playlist' para ambiente/género.
+    """
+    backend_normalizado = (backend or music_router.backend_actual()).strip().lower()
+    if backend_normalizado not in {"spotify", "youtube"}:
+        return "fallo: el backend debe ser spotify o youtube"
+    modo = (como or "cancion").strip().lower()
+    if modo not in {"cancion", "playlist"}:
+        return "fallo: el modo debe ser cancion o playlist"
+    try:
+        info = timers.programar_tarea_desde_texto(
+            cuando,
+            tipo="musica",
+            etiqueta=consulta,
+            payload={"query": consulta, "backend": backend_normalizado, "mode": modo},
+            default_hour=9,
+            default_minute=0,
+        )
+        return f"ok: música programada por {backend_normalizado} {_programacion_legible(info)}"
+    except Exception as e:
+        return f"fallo: no pude programar esa música ({e})"
 
 def listar_temporizadores() -> str:
     """Lista todos los timers y alarmas activos. Úsalo cuando nico pregunte 'qué timers tengo', 'qué alarmas hay', 'a qué hora me avisas'."""
@@ -530,6 +672,38 @@ def nuevo_evento(titulo: str, inicio_iso: str, duracion_minutos: int = 30) -> st
         return f"ok: evento '{titulo}' creado"
     except Exception as e:
         return f"fallo: {e}"
+
+
+def agendar_evento_inteligente(titulo: str, cuando: str, duracion_minutos: int = 30, recordar_antes_minutos: int = 0, descripcion: str = "") -> str:
+    """Crea un evento de agenda a partir de fecha/hora en lenguaje natural y, si hace falta, también deja un recordatorio por voz. Úsala para pedidos como 'agendame dentista el 5 de marzo a las 15', 'mañana a las 9 reunión con recordatorio 20 minutos antes' o 'el lunes a las 18 clase de guitarra'.
+
+    Args:
+        titulo: Título del evento.
+        cuando: Fecha y hora en lenguaje natural.
+        duracion_minutos: Duración estimada del evento.
+        recordar_antes_minutos: Cuántos minutos antes debe sonar el recordatorio por voz. Usa 0 para no crear recordatorio adicional.
+        descripcion: Texto opcional para guardar en la descripción del evento.
+    """
+    try:
+        info = timers.resolver_fecha_hora_desde_texto(cuando, default_hour=9, default_minute=0)
+        inicio = info["objetivo"]
+        calendario.crear_evento(titulo, inicio.isoformat(), duracion_minutos, descripcion)
+        respuesta = f"ok: evento '{titulo}' {_programacion_legible(info)}"
+        if recordar_antes_minutos > 0:
+            anticipacion = max(1, int(recordar_antes_minutos))
+            aviso = inicio - timedelta(minutes=anticipacion)
+            if aviso <= config.now_local():
+                return respuesta + ". No puse recordatorio por voz porque ya caía en el pasado"
+            info_recordatorio = timers.programar_tarea_para_datetime(
+                aviso,
+                tipo="recordatorio",
+                etiqueta=titulo,
+                payload={"mensaje": f"{titulo} en {anticipacion} minutos."},
+            )
+            respuesta += f". Recordatorio de voz {_programacion_legible(info_recordatorio)}"
+        return respuesta
+    except Exception as e:
+        return f"fallo: no pude agendar ese evento ({e})"
 
 
 def analiticas_youtube(periodo: str = "7d") -> str:
@@ -604,13 +778,15 @@ def listar_recuerdos() -> str:
 
 TOOLS = [
     encender_luces_casa, apagar_luces_casa, cambiar_color_luces, cambiar_brillo_luces,
+    apagar_cuantico, reiniciar_cuantico,
     reproducir_musica, poner_playlist, reanudar_musica, pausar_musica,
     siguiente_cancion, cancion_anterior, cambiar_volumen,
     usar_spotify_para_musica, usar_youtube_para_musica, backend_musica_actual,
     buscar_parlantes_bluetooth, listar_parlantes_bluetooth, conectar_parlante_bluetooth,
     desconectar_parlante_bluetooth, parlante_bluetooth_actual, usar_altavoz_integrado,
-    programar_aviso, crear_temporizador, crear_alarma_hora, listar_temporizadores, cancelar_temporizador,
-    eventos_de_hoy, eventos_de_la_semana, nuevo_evento,
+    programar_aviso, programar_recordatorio, programar_musica,
+    crear_temporizador, crear_alarma_hora, listar_temporizadores, cancelar_temporizador,
+    eventos_de_hoy, eventos_de_la_semana, nuevo_evento, agendar_evento_inteligente,
     analiticas_youtube, ultimos_videos,
     iniciar_modo_llamada,
     recordar, olvidar, listar_recuerdos,
@@ -645,8 +821,10 @@ if _luces_disponibles:
     SYSTEM_PROMPT += f"\n\nLUCES DE CASA DISPONIBLES: {', '.join(_luces_disponibles)}. Para controlar solo una, pasa su nombre (o una aproximación) en el parámetro `luz` de la tool correspondiente. Para controlar TODAS a la vez, deja `luz` vacío."
 
 # Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
-SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am' o 'a las 18:30', usa primero la tool `programar_aviso(cuando, etiqueta)`."
+SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am', 'a las 18:30', 'el 5 de marzo' o '5/3', usa primero la tool `programar_aviso(cuando, etiqueta)` o la tool específica de recordatorios si el usuario habla de recordar algo."
 SYSTEM_PROMPT += "\n\nMUSICA: el backend preferido puede ser Spotify o YouTube. Si nico dice explícitamente 'por spotify', 'usa spotify', 'por youtube' o 'usa youtube', usa primero la tool de selección correspondiente y luego la tool de música."
+SYSTEM_PROMPT += "\n\nTAREAS PROGRAMADAS: si nico pide reproducir música en una fecha futura, usa `programar_musica`. Si pide agendar algo con fecha natural y recordatorio por voz, usa `agendar_evento_inteligente`."
+SYSTEM_PROMPT += "\n\nSISTEMA: si nico pide apagar o reiniciar solo Cuántico, usa las tools `apagar_cuantico` o `reiniciar_cuantico`."
 SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {config.now_local().strftime('%Y-%m-%d %A %H:%M')} (zona horaria {config.CUANTICO_TIMEZONE})."
 
 def _crear_chat_turno(system_prompt, funciones):
@@ -675,6 +853,8 @@ _debug_emit("B", "startup-sound-finished")
 
 micro.inicializar()
 _debug_emit("B", "micro-inicializado")
+
+_restart_requested = False
 
 try:
     while True:
@@ -764,6 +944,10 @@ try:
                     en_conversacion = False
                     continue
 
+                if _ejecutar_accion_sistema_pendiente():
+                    en_conversacion = False
+                    continue
+
             except Exception as e:
                 print(f"⚠️ Error en OpenRouter: {e}")
                 _debug_emit("C", "conversation-exception", {"error": str(e), "traceback": traceback.format_exc()})
@@ -776,6 +960,9 @@ try:
 except KeyboardInterrupt:
     print("\n🛑 Desconexión manual detectada.")
     _debug_emit("A", "keyboard-interrupt")
+except _RestartRequested:
+    _restart_requested = True
+    _debug_emit("A", "restart-requested")
 finally:
     _debug_emit("A", "finally-start")
     timers.cerrar()
@@ -785,3 +972,5 @@ finally:
     time.sleep(0.5)
     print(" Reactor apagado. Cuántico fuera. ")
     _debug_emit("A", "finally-end")
+    if _restart_requested:
+        os.execv(sys.executable, [sys.executable, *sys.argv])
