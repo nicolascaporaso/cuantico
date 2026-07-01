@@ -8,6 +8,7 @@ import board
 import neopixel
 
 import cuantico_profiles as profile
+import wiz_controller
 
 NUM_PIXELS = 16
 PIN_LEDS = board.D12
@@ -120,6 +121,7 @@ def _render_state(state_name: str):
 def cambiar_estado(nuevo_estado):
     global _estado
     _estado = profile.resolve_state_name(nuevo_estado)
+    wiz_controller.sincronizar_estado_si_activo(_estado)
 
 
 def _animar():

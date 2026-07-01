@@ -18,6 +18,7 @@ import govee
 import music_router
 import spotify
 import timers
+import wiz_controller
 import calendario
 import youtube_stats
 import llamada
@@ -148,6 +149,211 @@ def cambiar_brillo_luces(porcentaje: int, luz: str = "") -> str:
         luz: (opcional) Nombre de la luz concreta. Déjalo vacío para todas.
     """
     return "ok" if govee.cambiar_brillo_todas(porcentaje, luz or None) else "fallo: esa luz no existe o no acepta brillo"
+
+
+def buscar_luces_wiz() -> str:
+    """Busca luces WiZ disponibles por red local usando pywizlight. Úsala cuando nico pida escanear, buscar o descubrir luces WiZ nuevas."""
+    try:
+        luces_wiz = wiz_controller.buscar_luces()
+    except Exception as e:
+        return f"fallo: {e}"
+    if not luces_wiz:
+        return "no encontré luces WiZ en la red"
+    return "; ".join(
+        f"{item['name']} ({item['ip']})" + (" ya registrada" if item.get("known") else "")
+        for item in luces_wiz
+    )
+
+
+def agregar_luz_wiz(ip_o_selector: str, nombre: str = "") -> str:
+    """Agrega una luz WiZ al registro persistente por IP o por una luz recién descubierta. Úsala cuando nico diga que la agregues, la guardes o la registres.
+
+    Args:
+        ip_o_selector: IP o texto que identifique la luz recién descubierta.
+        nombre: Nombre amigable opcional. Ej: 'Dormitorio', 'Velador', 'Escritorio'.
+    """
+    try:
+        info = wiz_controller.agregar_luz(ip_o_selector, nombre)
+        return f"ok: luz WiZ registrada como {info['name']} ({info['ip']})"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def renombrar_luz_wiz(luz: str, nombre_nuevo: str) -> str:
+    """Renombra una luz WiZ ya registrada. Úsala cuando nico diga 'esa luz del dormitorio ahora llamala velador' o quiera poner nombres más cómodos.
+
+    Args:
+        luz: Nombre actual o IP de la luz.
+        nombre_nuevo: Nuevo nombre amigable.
+    """
+    try:
+        info = wiz_controller.renombrar_luz(luz, nombre_nuevo)
+        return f"ok: ahora la luz WiZ {info['ip']} se llama {info['name']}"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def listar_luces_wiz() -> str:
+    """Lista las luces WiZ registradas y si está activo el modo de copiar emociones. Úsala cuando nico pregunte qué luces WiZ hay, cómo se llaman o si quedó activo el sync emocional."""
+    try:
+        return wiz_controller.resumen_estado()
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def encender_luces_wiz(luz: str = "") -> str:
+    """Enciende luces WiZ registradas. Úsala cuando nico diga que prenda una luz WiZ concreta o todas las WiZ.
+
+    Args:
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas las registradas.
+    """
+    try:
+        return "ok" if wiz_controller.encender(luz) else "fallo: no pude encender esas luces WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def apagar_luces_wiz(luz: str = "") -> str:
+    """Apaga luces WiZ registradas. Úsala cuando nico pida apagar una luz WiZ concreta o todas.
+
+    Args:
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas.
+    """
+    try:
+        return "ok" if wiz_controller.apagar(luz) else "fallo: no pude apagar esas luces WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def cambiar_color_luces_wiz(r: int, g: int, b: int, luz: str = "", brillo: int = 100) -> str:
+    """Pone una luz WiZ en un color RGB concreto. Úsala para pedidos como 'pone la luz Wiz del dormitorio en verde', 'roja', 'azul', 'violeta' o para copiar una emoción en un color.
+
+    Args:
+        r: Componente rojo 0-255.
+        g: Componente verde 0-255.
+        b: Componente azul 0-255.
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas.
+        brillo: Brillo 1-100.
+    """
+    try:
+        return "ok" if wiz_controller.cambiar_color(r, g, b, luz, brillo=brillo) else "fallo: no pude cambiar el color WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def fijar_brillo_luces_wiz(porcentaje: int, luz: str = "") -> str:
+    """Fija el brillo de una luz WiZ a un valor exacto. Úsala para frases como 'pone la luz Wiz al 70%' o 'dejala suave al 30%'.
+
+    Args:
+        porcentaje: Brillo 1-100.
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas.
+    """
+    try:
+        return "ok" if wiz_controller.fijar_brillo(porcentaje, luz) else "fallo: no pude ajustar el brillo WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def ajustar_brillo_luces_wiz(delta: int, luz: str = "") -> str:
+    """Sube o baja el brillo de una luz WiZ respecto al valor actual. Úsala para pedidos como 'subí la luz 20%' o 'bajala 15%'.
+
+    Args:
+        delta: Cambio relativo. Ej: +20 o -15.
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas.
+    """
+    try:
+        return "ok" if wiz_controller.ajustar_brillo(delta, luz) else "fallo: no pude mover el brillo WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def poner_luz_lectura_wiz(luz: str = "") -> str:
+    """Pone una luz WiZ en modo lectura: blanca neutra y con brillo cómodo para leer o trabajar.
+
+    Args:
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas.
+    """
+    try:
+        return "ok" if wiz_controller.modo_lectura(luz) else "fallo: no pude poner la luz de lectura WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def parpadear_luces_wiz(segundos: int = 30, luz: str = "") -> str:
+    """Hace parpadear luces WiZ durante unos segundos. Úsala para pedidos como 'hacé parpadear la luz del dormitorio 30 segundos'.
+
+    Args:
+        segundos: Duración del parpadeo.
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas.
+    """
+    try:
+        return "ok" if wiz_controller.parpadear(luz, segundos) else "fallo: no pude lanzar ese parpadeo WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def efecto_luces_wiz(efecto: str = "fiesta", luz: str = "", segundos: int = 30) -> str:
+    """Lanza un efecto temporal en luces WiZ. Úsala para pedidos como 'hacé efecto de luces', 'modo fiesta', 'arcoiris', 'policía' o 'respirar'.
+
+    Args:
+        efecto: Nombre del efecto. Recomendados: 'fiesta', 'arcoiris', 'policia', 'respirar', 'parpadeo'.
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas.
+        segundos: Duración del efecto. Usa 0 si querés que quede corriendo hasta otro cambio.
+    """
+    try:
+        return "ok" if wiz_controller.efecto(efecto, luz, segundos) else "fallo: no pude arrancar ese efecto WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def copiar_emocion_a_luz_wiz(luz: str = "") -> str:
+    """Activa el modo donde Cuántico copia sus emociones y estados al color/efecto de las luces WiZ. Úsala cuando nico diga 'copiá tus emociones a la luz Wiz' o 'sincronizate con la luz del dormitorio'.
+
+    Args:
+        luz: Nombre o IP de la luz WiZ que debe seguir las emociones. Déjalo vacío para todas las WiZ registradas.
+    """
+    try:
+        wiz_controller.activar_sync_emociones(luz)
+        wiz_controller.sincronizar_estado_si_activo("esperando")
+        if luz:
+            return f"ok: las emociones de Cuántico ahora se copian a la luz WiZ {luz}"
+        return "ok: las emociones de Cuántico ahora se copian a todas las luces WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def desactivar_copia_emocion_wiz() -> str:
+    """Desactiva el modo de copiar emociones de Cuántico a las luces WiZ."""
+    try:
+        return "ok" if wiz_controller.desactivar_sync_emociones() else "fallo: no pude apagar el sync emocional WiZ"
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def estado_luces_wiz(luz: str = "") -> str:
+    """Dice el estado actual de las luces WiZ: encendida, brillo, escena o color conocido. Úsala cuando nico pregunte cómo quedó una luz WiZ o si está prendida.
+
+    Args:
+        luz: Nombre o IP de la luz WiZ. Déjalo vacío para todas.
+    """
+    try:
+        estados = wiz_controller.estado_actual(luz)
+    except Exception as e:
+        return f"fallo: {e}"
+    partes = []
+    for estado in estados:
+        if estado["is_on"]:
+            detalle = f"encendida al {estado['brightness']}%"
+            if estado.get("scene"):
+                detalle += f", escena {estado['scene']}"
+            elif estado.get("rgb"):
+                detalle += f", rgb {tuple(estado['rgb'])}"
+            elif estado.get("colortemp"):
+                detalle += f", {estado['colortemp']}K"
+        else:
+            detalle = "apagada"
+        partes.append(f"{estado['name']} ({estado['ip']}): {detalle}")
+    return "; ".join(partes)
 
 # Cola de acciones de música: se encolan durante la tool-call y se ejecutan
 # DESPUÉS del TTS para que el comentario burlón no se solape con la canción.
@@ -778,6 +984,11 @@ def listar_recuerdos() -> str:
 
 TOOLS = [
     encender_luces_casa, apagar_luces_casa, cambiar_color_luces, cambiar_brillo_luces,
+    buscar_luces_wiz, agregar_luz_wiz, renombrar_luz_wiz, listar_luces_wiz,
+    encender_luces_wiz, apagar_luces_wiz, cambiar_color_luces_wiz,
+    fijar_brillo_luces_wiz, ajustar_brillo_luces_wiz, poner_luz_lectura_wiz,
+    parpadear_luces_wiz, efecto_luces_wiz, copiar_emocion_a_luz_wiz,
+    desactivar_copia_emocion_wiz, estado_luces_wiz,
     apagar_cuantico, reiniciar_cuantico,
     reproducir_musica, poner_playlist, reanudar_musica, pausar_musica,
     siguiente_cancion, cancion_anterior, cambiar_volumen,
@@ -805,6 +1016,8 @@ luces.encender_reactor()
 _debug_emit("A", "luces-encendidas")
 govee.inicializar()
 _debug_emit("A", "govee-inicializado")
+wiz_controller.inicializar()
+_debug_emit("A", "wiz-inicializado")
 music_router.inicializar()
 _debug_emit("A", "music-router-inicializado", {"backend": music_router.backend_actual()})
 timers.inicializar(_callback_timer)
@@ -819,6 +1032,9 @@ _debug_emit("A", "recuerdos-inicializados")
 _luces_disponibles = govee.nombres_luces()
 if _luces_disponibles:
     SYSTEM_PROMPT += f"\n\nLUCES DE CASA DISPONIBLES: {', '.join(_luces_disponibles)}. Para controlar solo una, pasa su nombre (o una aproximación) en el parámetro `luz` de la tool correspondiente. Para controlar TODAS a la vez, deja `luz` vacío."
+_luces_wiz = wiz_controller.nombres_luces()
+if _luces_wiz:
+    SYSTEM_PROMPT += f"\n\nLUCES WIZ REGISTRADAS: {', '.join(_luces_wiz)}. Cuando nico mencione WiZ, dormitorio, velador u otras luces WiZ registradas, usa las tools específicas de WiZ."
 
 # Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
 SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am', 'a las 18:30', 'el 5 de marzo' o '5/3', usa primero la tool `programar_aviso(cuando, etiqueta)` o la tool específica de recordatorios si el usuario habla de recordar algo."
