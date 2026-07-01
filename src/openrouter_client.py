@@ -227,7 +227,9 @@ class OpenRouterChatSession:
             return f'fallo: tool desconocida "{nombre}"'
         try:
             _debug_emit("tool-execute", {"tool_name": nombre, "arguments": argumentos})
-            return _serializar_resultado(fn(**argumentos))
+            resultado = _serializar_resultado(fn(**argumentos))
+            _debug_emit("tool-result", {"tool_name": nombre, "result_preview": resultado[:240]})
+            return resultado
         except Exception as e:
             _debug_emit("tool-exception", {"tool_name": nombre, "arguments": argumentos, "error": str(e)})
             return f"fallo: {e}"

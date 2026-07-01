@@ -15,6 +15,7 @@ import altavoz
 import bluetooth_audio
 import govee
 import music_router
+import spotify
 import timers
 import calendario
 import youtube_stats
@@ -145,9 +146,46 @@ def cambiar_brillo_luces(porcentaje: int, luz: str = "") -> str:
 # Cola de acciones de música: se encolan durante la tool-call y se ejecutan
 # DESPUÉS del TTS para que el comentario burlón no se solape con la canción.
 _pendientes_musica = []
+_comentario_musica_pendiente: str | None = None
+_silenciar_tts_musica_pendiente = False
 
-def _defer(fn, *args):
+def _defer(fn, *args, comentario: str = "", silenciar_tts: bool = False):
+    global _comentario_musica_pendiente, _silenciar_tts_musica_pendiente
     _pendientes_musica.append((fn, args))
+    if comentario:
+        _comentario_musica_pendiente = comentario
+    if silenciar_tts:
+        _silenciar_tts_musica_pendiente = True
+
+
+def _tomar_comentario_musica() -> str:
+    global _comentario_musica_pendiente
+    comentario = _comentario_musica_pendiente or ""
+    _comentario_musica_pendiente = None
+    return comentario
+
+
+def _tomar_silencio_tts_musica() -> bool:
+    global _silenciar_tts_musica_pendiente
+    valor = _silenciar_tts_musica_pendiente
+    _silenciar_tts_musica_pendiente = False
+    return valor
+
+
+def _hay_reemplazo_musica_pendiente() -> bool:
+    """Detecta acciones diferidas que van a sustituir la reproducción actual."""
+    nombres = {
+        getattr(fn, "__name__", "")
+        for fn, _args in _pendientes_musica
+    }
+    return bool(
+        {
+            "ejecutar_preparado",
+            "reproducir",
+            "reproducir_playlist",
+        }
+        & nombres
+    )
 
 def _ejecutar_pendientes_musica():
     ejecutadas = 0
@@ -203,6 +241,17 @@ def reproducir_musica(query: str) -> str:
     if not ok:
         return f"fallo: {motivo}"
     backend = music_router.backend_actual()
+    if backend == "youtube":
+        info = music_router.preparar_reproduccion(query, backend=backend)
+        if not info.get("ok"):
+            return f"fallo: {info.get('error', 'no pude preparar la reproducción')}"
+        _defer(
+            music_router.ejecutar_preparado,
+            info["prepared"],
+            comentario="",
+            silenciar_tts=True,
+        )
+        return f"ok: preparo '{info['title']}' por {backend}"
     _defer(music_router.reproducir, query)
     return f"ok: preparo reproducción por {backend}"
 
@@ -216,6 +265,17 @@ def poner_playlist(descripcion: str) -> str:
     if not ok:
         return f"fallo: {motivo}"
     backend = music_router.backend_actual()
+    if backend == "youtube":
+        info = music_router.preparar_playlist(descripcion, backend=backend)
+        if not info.get("ok"):
+            return f"fallo: {info.get('error', 'no pude preparar la playlist')}"
+        _defer(
+            music_router.ejecutar_preparado,
+            info["prepared"],
+            comentario="",
+            silenciar_tts=True,
+        )
+        return f"ok: preparo playlist por {backend} arrancando con '{info['title']}'"
     _defer(music_router.reproducir_playlist, descripcion)
     return f"ok: preparo playlist por {backend}"
 
@@ -254,12 +314,20 @@ def cambiar_volumen(delta: int) -> str:
 
 def usar_spotify_para_musica() -> str:
     """Deja Spotify como backend preferido para música. Úsala cuando nico diga 'usa spotify', 'ponelo por spotify' o 'quiero usar raspotify'."""
+    ok, motivo = spotify.disponible_para_backend()
+    if not ok:
+        actual = music_router.backend_actual()
+        return f"fallo: spotify no está listo ahora mismo ({motivo}). Sigo usando {actual}."
     backend = music_router.seleccionar_backend("spotify")
     return f"ok: desde ahora uso {backend} para la música"
 
 
 def usar_youtube_para_musica() -> str:
     """Deja YouTube como backend preferido para música usando yt-dlp y mpv. Úsala cuando nico diga 'usa youtube', 'ponelo por youtube' o 'quiero el reproductor gratis'."""
+    ok, motivo = music_router.disponible_para_reproducir("youtube")
+    if not ok:
+        actual = music_router.backend_actual()
+        return f"fallo: youtube no está listo ahora mismo ({motivo}). Sigo usando {actual}."
     backend = music_router.seleccionar_backend("youtube")
     return f"ok: desde ahora uso {backend} para la música"
 
@@ -656,9 +724,20 @@ try:
                 # no se solape con tool-calls intermedias.
                 response = chat.send_message(texto_usuario)
                 texto_respuesta = (response.text or "").strip()
+                silenciar_tts_musica = _tomar_silencio_tts_musica()
+                comentario_musica = _tomar_comentario_musica()
+                if comentario_musica:
+                    texto_respuesta = (texto_respuesta + " " + comentario_musica).strip() if texto_respuesta else comentario_musica
+                    _debug_emit("C", "music-commentary-appended", {"text_preview": comentario_musica[:160]})
+                if silenciar_tts_musica and _hay_reemplazo_musica_pendiente():
+                    _debug_emit("C", "music-turn-suppress-tts", {"text_preview": texto_respuesta[:160]})
+                    texto_respuesta = ""
                 _debug_emit("C", "assistant-response-ready", {"has_text": bool(texto_respuesta), "text_preview": texto_respuesta[:160]})
 
                 if texto_respuesta:
+                    if _hay_reemplazo_musica_pendiente():
+                        liberado = music_router.detener_todo()
+                        _debug_emit("B", "music-output-released-for-tts", {"released": liberado})
                     emocion_ia = profile.detectar_emocion(texto_respuesta)
                     print(f"🤖 Cuántico: {texto_respuesta}")
                     _debug_emit("C", "tts-start", {"emotion": emocion_ia})

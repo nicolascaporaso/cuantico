@@ -11,14 +11,16 @@ DEVICE_HINTS = ["raspotify", "cuantico"]
 
 _sp = None
 _device_id = None
+_last_error = ""
 
 
 def inicializar():
-    global _sp
+    global _sp, _last_error
     # Spotify opcional
     if not config.SPOTIFY_ENABLED:
         print("🎵 Spotify deshabilitado")
         _sp = None
+        _last_error = "Spotify está deshabilitado en .env"
         return
 
     try:
@@ -39,9 +41,11 @@ def inicializar():
             print(f"🎵 Cuántico usará: {_device_id[:8]}…")
         else:
             print(f"⚠️ Ningún dispositivo coincide con {DEVICE_HINTS}. Ajusta DEVICE_HINTS en spotify.py con el nombre real que veas arriba.")
+        _last_error = ""
     except Exception as e:
         print(f"⚠️ Spotify no disponible: {e}")
         _sp = None
+        _last_error = str(e)
 
 
 def asegurar_inicializado() -> bool:
@@ -49,6 +53,15 @@ def asegurar_inicializado() -> bool:
         return True
     inicializar()
     return _sp is not None
+
+
+def disponible_para_backend() -> tuple[bool, str]:
+    if not config.SPOTIFY_ENABLED:
+        return False, "Spotify está deshabilitado en .env"
+    if not asegurar_inicializado():
+        detalle = _last_error or "Spotify no inicializa correctamente"
+        return False, f"Spotify no inicializa correctamente: {detalle}"
+    return True, "ok"
 
 
 def _refrescar_dispositivo(verboso=False, reintentos=1, espera=3):
@@ -80,14 +93,35 @@ def _refrescar_dispositivo(verboso=False, reintentos=1, espera=3):
             return
 
 
+def _estado_playback():
+    if not _sp:
+        return None
+    try:
+        return _sp.current_playback()
+    except Exception as e:
+        print(f"⚠️ Spotify error leyendo playback actual: {e}")
+        return None
+
+
+def _resolver_kwargs_device_id() -> dict:
+    global _device_id
+    if _device_id:
+        return {"device_id": _device_id}
+    estado = _estado_playback()
+    activo = (estado or {}).get("device", {}) if isinstance(estado, dict) else {}
+    activo_id = activo.get("id")
+    if activo_id:
+        _device_id = activo_id
+        print(f"   🎵 Usando dispositivo activo de Spotify: {_device_id[:8]}…")
+        return {"device_id": _device_id}
+    return {}
+
+
 def disponible_para_reproducir() -> tuple[bool, str]:
-    if not config.SPOTIFY_ENABLED:
-        return False, "Spotify está deshabilitado en .env"
-    if not asegurar_inicializado():
-        return False, "Spotify no inicializa correctamente"
+    ok, motivo = disponible_para_backend()
+    if not ok:
+        return False, motivo
     _refrescar_dispositivo()
-    if not _device_id:
-        return False, "no veo un dispositivo Spotify Connect llamado raspotify o cuantico"
     return True, "ok"
 
 
@@ -97,6 +131,7 @@ def resumen_estado() -> dict:
         "initialized": _sp is not None,
         "device_id": _device_id,
         "device_hints": DEVICE_HINTS[:],
+        "last_error": _last_error,
     }
 
 
@@ -106,6 +141,7 @@ def reproducir(query=None):
         print(f"   ⚠️ {motivo}")
         return False
     _refrescar_dispositivo(verboso=True)
+    kwargs_device = _resolver_kwargs_device_id()
     try:
         if query:
             r = _sp.search(q=query, type="track", limit=1)
@@ -113,21 +149,21 @@ def reproducir(query=None):
             if not items:
                 print(f"   ⚠️ Sin resultados para '{query}'")
                 return False
-            _sp.start_playback(device_id=_device_id, uris=[items[0]["uri"]])
+            _sp.start_playback(uris=[items[0]["uri"]], **kwargs_device)
             print(f"   🎵 Reproduciendo: {items[0].get('name', '?')}")
         else:
             # Sin query → solo tiene sentido "reanudar" si había algo sonando antes Y el device actual es ese.
-            try:
-                estado = _sp.current_playback()
-            except Exception:
-                estado = None
+            estado = _estado_playback()
             hay_que_reanudar = bool(
                 estado
                 and estado.get("item")
-                and estado.get("device", {}).get("id") == _device_id
+                and (
+                    not _device_id
+                    or estado.get("device", {}).get("id") == _device_id
+                )
             )
             if hay_que_reanudar:
-                _sp.start_playback(device_id=_device_id)
+                _sp.start_playback(**kwargs_device)
                 print("   🎵 Reanudando reproducción previa.")
             else:
                 print("   🎵 Sin contexto previo en Raspotify; lanzo tracks genéricos.")
@@ -136,7 +172,7 @@ def reproducir(query=None):
                 if not items:
                     print("   ⚠️ Búsqueda genérica vacía.")
                     return False
-                _sp.start_playback(device_id=_device_id, uris=[t["uri"] for t in items])
+                _sp.start_playback(uris=[t["uri"] for t in items], **kwargs_device)
                 print(f"   🎵 {len(items)} tracks genéricos cargados.")
         return True
     except Exception as e:
@@ -151,6 +187,7 @@ def reproducir_playlist(query):
         print(f"   ⚠️ {motivo}")
         return False
     _refrescar_dispositivo()
+    kwargs_device = _resolver_kwargs_device_id()
     try:
         # Buscamos tracks directamente (no playlists) — esquiva el bug de
         # "context is not available" con playlists editoriales Default de Spotify.
@@ -169,9 +206,9 @@ def reproducir_playlist(query):
         if not track_uris:
             print(f"   ⚠️ Ningún track encontrado para '{query}'")
             return False
-        _sp.start_playback(device_id=_device_id, uris=track_uris)
+        _sp.start_playback(uris=track_uris, **kwargs_device)
         try:
-            _sp.shuffle(True, device_id=_device_id)
+            _sp.shuffle(True, **kwargs_device)
         except Exception:
             pass  # shuffle falla a veces justo tras start_playback; no es crítico
         print(f"   🎧 {len(track_uris)} tracks cargados para '{query}'")
@@ -186,7 +223,7 @@ def pausar():
     if not ok:
         return False
     try:
-        _sp.pause_playback(device_id=_device_id)
+        _sp.pause_playback(**_resolver_kwargs_device_id())
         return True
     except Exception as e:
         print(f"⚠️ Spotify error pausa: {e}")
@@ -198,7 +235,7 @@ def siguiente():
     if not ok:
         return False
     try:
-        _sp.next_track(device_id=_device_id)
+        _sp.next_track(**_resolver_kwargs_device_id())
         return True
     except Exception as e:
         print(f"⚠️ Spotify error siguiente: {e}")
@@ -210,7 +247,7 @@ def anterior():
     if not ok:
         return False
     try:
-        _sp.previous_track(device_id=_device_id)
+        _sp.previous_track(**_resolver_kwargs_device_id())
         return True
     except Exception as e:
         print(f"⚠️ Spotify error anterior: {e}")
@@ -223,12 +260,12 @@ def volumen(delta):
     if not ok:
         return False
     try:
-        estado = _sp.current_playback()
+        estado = _estado_playback()
         if not estado:
             return False
         actual = int(estado.get("device", {}).get("volume_percent", 50) or 50)
         nuevo = int(max(0, min(100, actual + int(delta))))
-        _sp.volume(nuevo, device_id=_device_id)
+        _sp.volume(nuevo, **_resolver_kwargs_device_id())
         print(f"   🔉 Volumen Spotify: {actual}% → {nuevo}%")
         return True
     except Exception as e:

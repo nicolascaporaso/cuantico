@@ -104,6 +104,29 @@ def reproducir(query: str | None = None, backend: str | None = None) -> bool:
     return ok
 
 
+def preparar_reproduccion(query: str, backend: str | None = None) -> dict:
+    elegido, modulo = _backend_module(backend)
+    if elegido != "youtube":
+        return {"ok": False, "error": "La preparación avanzada solo aplica al backend YouTube"}
+    return modulo.preparar_reproduccion(query)
+
+
+def preparar_playlist(query: str, backend: str | None = None) -> dict:
+    elegido, modulo = _backend_module(backend)
+    if elegido != "youtube":
+        return {"ok": False, "error": "La preparación avanzada solo aplica al backend YouTube"}
+    return modulo.preparar_playlist(query)
+
+
+def ejecutar_preparado(prepared: dict, backend: str | None = None) -> bool:
+    elegido, modulo = _backend_module(backend or "youtube")
+    ok = modulo.ejecutar_preparado(prepared)
+    if ok:
+        state = _load_state()
+        _save_state({"backend": state["backend"], "last_backend": elegido})
+    return ok
+
+
 def reproducir_playlist(query: str, backend: str | None = None) -> bool:
     elegido, modulo = _backend_module(backend)
     ok = modulo.reproducir_playlist(query)

@@ -344,6 +344,13 @@ Este backend usa la misma ruta de audio activa que el TTS:
 - I2S / VoiceHAT local
 - parlante Bluetooth si está conectado y activo
 
+Comportamiento actual:
+
+- antes de arrancar la reproducción, Cuántico prepara el tema y le pide a `mpv` que espere con cache hasta juntar bastante buffer
+- para YouTube intenta acercarse a "medio tema" cacheado, con límites razonables para que la espera no se vuelva eterna
+- si detecta que esa preparación va a tardar un poco, agrega una frase corta con un dato del tema o del canal mientras termina de cargar
+- si la carga pinta rápida, no mete ese comentario extra
+
 Estado persistente:
 
 - `state/music_backend.json`
