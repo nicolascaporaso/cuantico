@@ -415,13 +415,34 @@ def _ejecutar_pendientes_musica():
 
 
 def _programacion_legible(info: dict) -> str:
+    recurrencia = (info.get("recurrencia") or {}).get("type", "once")
     if info.get("segundos") is not None:
         return f"en {info['segundos']} segundos"
     try:
         objetivo = datetime.fromisoformat(info["vence_iso"])
-        return f"para {objetivo.strftime('%d/%m/%Y %H:%M')}"
+        base = f"para {objetivo.strftime('%d/%m/%Y %H:%M')}"
+        if recurrencia == "daily":
+            return base + " y luego todos los días"
+        if recurrencia == "weekly":
+            nombres = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+            dias = [nombres[d] for d in (info.get("recurrencia") or {}).get("weekdays", []) if 0 <= d <= 6]
+            if dias:
+                return base + " y luego cada " + ", ".join(dias)
+        return base
     except Exception:
         return f"para {info.get('vence_iso', 'una fecha futura')}"
+
+
+def _resolver_sistema_luz(sistema: str = "", luz: str = "") -> str:
+    preferido = (sistema or "").strip().lower()
+    if preferido in {"wiz", "govee"}:
+        return preferido
+    if luz:
+        if wiz_controller.nombres_luces() and any(luz.lower() in nombre.lower() or nombre.lower() in luz.lower() for nombre in wiz_controller.nombres_luces()):
+            return "wiz"
+        if govee.nombres_luces() and any(luz.lower() in nombre.lower() or nombre.lower() in luz.lower() for nombre in govee.nombres_luces()):
+            return "govee"
+    return "wiz" if wiz_controller.nombres_luces() else "govee"
 
 
 def _marcar_accion_sistema(accion: str):
@@ -492,6 +513,26 @@ def _ejecutar_musica_programada(evento: dict):
         _hablar(f"No pude arrancar la música programada: {query}.", "embolado")
 
 
+def _ejecutar_luces_programadas(evento: dict):
+    payload = evento.get("payload") or {}
+    sistema = _resolver_sistema_luz(payload.get("system", ""), payload.get("selector", ""))
+    accion = (payload.get("action") or "encender").strip().lower()
+    selector = (payload.get("selector") or "").strip()
+    if sistema == "wiz":
+        ok = wiz_controller.encender(selector) if accion == "encender" else wiz_controller.apagar(selector)
+    else:
+        ok = govee.encender_todas(selector or None) if accion == "encender" else govee.apagar_todas(selector or None)
+    _debug_emit("T", "scheduled-lights-fired", {
+        "system": sistema,
+        "action": accion,
+        "selector": selector,
+        "ok": ok,
+        "recurrence": evento.get("recurrencia") or {},
+    })
+    if not ok:
+        _hablar(f"No pude {accion} las luces programadas {selector or 'de casa'}.", "embolado")
+
+
 def _callback_timer(evento: dict):
     """Invocado por el scheduler de timers al vencer un evento persistido."""
     _debug_emit("T", "alarm-callback-enter", {
@@ -502,6 +543,8 @@ def _callback_timer(evento: dict):
     try:
         if evento.get("tipo") == "musica":
             _ejecutar_musica_programada(evento)
+        elif evento.get("tipo") == "luces":
+            _ejecutar_luces_programadas(evento)
         else:
             texto, emocion = _texto_evento_programado(evento)
             _hablar(texto, emocion)
@@ -810,6 +853,38 @@ def programar_musica(cuando: str, consulta: str, backend: str = "", como: str = 
     except Exception as e:
         return f"fallo: no pude programar esa música ({e})"
 
+
+def programar_luces(cuando: str, accion: str, luz: str = "", sistema: str = "", recurrencia: str = "una_vez", dias_semana: str = "") -> str:
+    """Programa luces para encender o apagar una sola vez o en forma recurrente. Úsala para pedidos como 'encendé la luz del dormitorio mañana a las 19', 'apagá las luces todos los días a las 23', 'todos los lunes y jueves a las 17 prendé la luz wiz del dormitorio'.
+
+    Args:
+        cuando: Hora o fecha de inicio. Ej: 'mañana a las 19', '23:00', '5 de marzo a las 18'.
+        accion: 'encender' o 'apagar'.
+        luz: Nombre de la luz o grupo. Déjalo vacío para todas las luces del sistema elegido.
+        sistema: 'wiz' o 'govee'. Déjalo vacío si se puede inferir por el nombre de la luz.
+        recurrencia: 'una_vez', 'diaria' o 'semanal'.
+        dias_semana: Solo para recurrencia semanal. Ej: 'lunes,jueves'.
+    """
+    accion_normalizada = (accion or "").strip().lower()
+    if accion_normalizada not in {"encender", "apagar"}:
+        return "fallo: la acción debe ser encender o apagar"
+    sistema_resuelto = _resolver_sistema_luz(sistema, luz)
+    try:
+        info = timers.programar_tarea_desde_texto(
+            cuando,
+            tipo="luces",
+            etiqueta=luz or "luces",
+            payload={"system": sistema_resuelto, "action": accion_normalizada, "selector": luz},
+            default_hour=19,
+            default_minute=0,
+            recurrencia=recurrencia,
+            dias_semana=dias_semana,
+        )
+        destino = luz or f"luces {sistema_resuelto}"
+        return f"ok: {accion_normalizada} {destino} {_programacion_legible(info)}"
+    except Exception as e:
+        return f"fallo: no pude programar esas luces ({e})"
+
 def listar_temporizadores() -> str:
     """Lista todos los timers y alarmas activos. Úsalo cuando nico pregunte 'qué timers tengo', 'qué alarmas hay', 'a qué hora me avisas'."""
     lista = timers.listar()
@@ -821,7 +896,8 @@ def listar_temporizadores() -> str:
         h, r = divmod(s, 3600)
         m, s2 = divmod(r, 60)
         cuando = f"{h}h{m:02d}m" if h else (f"{m}m{s2:02d}s" if m else f"{s2}s")
-        partes.append(f"{t['tipo']} '{t['etiqueta'] or t['id']}' en {cuando}")
+        rec = t.get("recurrencia_texto")
+        partes.append(f"{t['tipo']} '{t['etiqueta'] or t['id']}' en {cuando}" + (f" [{rec}]" if rec and rec != "una vez" else ""))
     return "; ".join(partes)
 
 def cancelar_temporizador(nombre: str) -> str:
@@ -995,7 +1071,7 @@ TOOLS = [
     usar_spotify_para_musica, usar_youtube_para_musica, backend_musica_actual,
     buscar_parlantes_bluetooth, listar_parlantes_bluetooth, conectar_parlante_bluetooth,
     desconectar_parlante_bluetooth, parlante_bluetooth_actual, usar_altavoz_integrado,
-    programar_aviso, programar_recordatorio, programar_musica,
+    programar_aviso, programar_recordatorio, programar_musica, programar_luces,
     crear_temporizador, crear_alarma_hora, listar_temporizadores, cancelar_temporizador,
     eventos_de_hoy, eventos_de_la_semana, nuevo_evento, agendar_evento_inteligente,
     analiticas_youtube, ultimos_videos,
@@ -1039,7 +1115,7 @@ if _luces_wiz:
 # Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
 SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am', 'a las 18:30', 'el 5 de marzo' o '5/3', usa primero la tool `programar_aviso(cuando, etiqueta)` o la tool específica de recordatorios si el usuario habla de recordar algo."
 SYSTEM_PROMPT += "\n\nMUSICA: el backend preferido puede ser Spotify o YouTube. Si nico dice explícitamente 'por spotify', 'usa spotify', 'por youtube' o 'usa youtube', usa primero la tool de selección correspondiente y luego la tool de música."
-SYSTEM_PROMPT += "\n\nTAREAS PROGRAMADAS: si nico pide reproducir música en una fecha futura, usa `programar_musica`. Si pide agendar algo con fecha natural y recordatorio por voz, usa `agendar_evento_inteligente`."
+SYSTEM_PROMPT += "\n\nTAREAS PROGRAMADAS: si nico pide reproducir música en una fecha futura, usa `programar_musica`. Si pide programar luces para una fecha futura o una recurrencia como todos los días, todos los lunes o lunes y jueves a las 17, usa `programar_luces`. Si pide agendar algo con fecha natural y recordatorio por voz, usa `agendar_evento_inteligente`."
 SYSTEM_PROMPT += "\n\nSISTEMA: si nico pide apagar o reiniciar solo Cuántico, usa las tools `apagar_cuantico` o `reiniciar_cuantico`."
 SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {config.now_local().strftime('%Y-%m-%d %A %H:%M')} (zona horaria {config.CUANTICO_TIMEZONE})."
 

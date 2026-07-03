@@ -33,6 +33,24 @@ _MESES = {
     "noviembre": 11,
     "diciembre": 12,
 }
+_DIAS_SEMANA = {
+    "lunes": 0,
+    "lun": 0,
+    "martes": 1,
+    "mar": 1,
+    "miercoles": 2,
+    "miércoles": 2,
+    "mie": 2,
+    "jueves": 3,
+    "jue": 3,
+    "viernes": 4,
+    "vie": 4,
+    "sabado": 5,
+    "sábado": 5,
+    "sab": 5,
+    "domingo": 6,
+    "dom": 6,
+}
 
 _lock = threading.Lock()
 _cond = threading.Condition(_lock)
@@ -106,6 +124,7 @@ def _cargar():
             "vence": vence,
             "etiqueta": d.get("etiqueta", ""),
             "payload": d.get("payload") or {},
+            "recurrencia": d.get("recurrencia") or {"type": "once"},
         }
         heapq.heappush(_heap, (vence, id_))
         if vence <= ahora:
@@ -212,6 +231,96 @@ def _extraer_hora(texto: str) -> tuple[int | None, int | None, bool]:
     return hora, minuto, True
 
 
+def _normalizar_recurrencia(recurrencia: str = "", dias_semana: str = "") -> dict:
+    tipo = _normalizar_texto(recurrencia or "una_vez").replace(" ", "_")
+    if tipo in {"", "una", "una_vez", "once", "unica", "unica_vez"}:
+        return {"type": "once"}
+    if tipo in {"diaria", "diario", "todos_los_dias", "cada_dia", "todos_los_días"}:
+        return {"type": "daily"}
+    if tipo in {"semanal", "cada_semana", "todos_los_lunes", "dias_semana"}:
+        dias = []
+        for parte in re.split(r"[,;/]| y ", _normalizar_texto(dias_semana)):
+            clave = parte.strip()
+            if not clave:
+                continue
+            if clave not in _DIAS_SEMANA:
+                raise ValueError(f"día de semana no reconocido: {parte.strip()}")
+            dias.append(_DIAS_SEMANA[clave])
+        dias = sorted(set(dias))
+        if not dias:
+            raise ValueError("para recurrencia semanal faltan días de semana")
+        return {"type": "weekly", "weekdays": dias}
+    raise ValueError("recurrencia no soportada")
+
+
+def _formatear_recurrencia(recurrencia: dict | None) -> str:
+    info = recurrencia or {"type": "once"}
+    tipo = info.get("type", "once")
+    if tipo == "daily":
+        return "diaria"
+    if tipo == "weekly":
+        nombres = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+        dias = [nombres[d] for d in info.get("weekdays", []) if 0 <= d <= 6]
+        return "semanal (" + ", ".join(dias) + ")"
+    return "una vez"
+
+
+def _siguiente_recurrencia(desde: datetime, recurrencia: dict | None) -> datetime | None:
+    info = recurrencia or {"type": "once"}
+    tipo = info.get("type", "once")
+    if tipo == "once":
+        return None
+    if tipo == "daily":
+        return desde + timedelta(days=1)
+    if tipo == "weekly":
+        dias = sorted(set(int(v) for v in info.get("weekdays", [])))
+        if not dias:
+            return None
+        for offset in range(1, 8):
+            candidato = desde + timedelta(days=offset)
+            if candidato.weekday() in dias:
+                return candidato
+        return desde + timedelta(days=7)
+    return None
+
+
+def _resolver_primer_vencimiento_recurrente(cuando: str, recurrencia: dict, default_hour: int, default_minute: int) -> datetime:
+    texto = _normalizar_texto(cuando or "")
+    if not texto:
+        raise ValueError("faltó la hora de la tarea recurrente")
+    ahora = _ahora_local()
+    fecha_info, resto = _extraer_fecha(texto)
+    hora, minuto, tiene_hora = _extraer_hora(resto if fecha_info else texto)
+    if not tiene_hora:
+        hora, minuto = default_hour, default_minute
+    tipo = recurrencia.get("type", "once")
+    if tipo == "daily":
+        objetivo = ahora.replace(hour=hora, minute=minuto, second=0, microsecond=0)
+        if objetivo <= ahora:
+            objetivo += timedelta(days=1)
+        return objetivo
+    if tipo == "weekly":
+        dias = sorted(set(int(v) for v in recurrencia.get("weekdays", [])))
+        if not dias:
+            raise ValueError("para recurrencia semanal faltan días")
+        if fecha_info:
+            objetivo = _dt_local(fecha_info["year"], fecha_info["month"], fecha_info["day"], hora, minuto)
+            if objetivo.weekday() not in dias:
+                raise ValueError("la fecha elegida no coincide con los días de la recurrencia semanal")
+            if objetivo <= ahora:
+                siguiente = _siguiente_recurrencia(objetivo, recurrencia)
+                if siguiente is None:
+                    raise ValueError("no pude calcular la siguiente recurrencia semanal")
+                return siguiente
+            return objetivo
+        for offset in range(0, 8):
+            candidato = (ahora + timedelta(days=offset)).replace(hour=hora, minute=minuto, second=0, microsecond=0)
+            if candidato.weekday() in dias and candidato > ahora:
+                return candidato
+        raise ValueError("no pude calcular la próxima ocurrencia semanal")
+    raise ValueError("esa recurrencia requiere una implementación distinta")
+
+
 def resolver_fecha_hora_desde_texto(cuando: str, default_hour: int = 9, default_minute: int = 0) -> dict:
     bruto = (cuando or "").strip()
     if not bruto:
@@ -267,6 +376,7 @@ def _registrar_programacion(tipo: str, vence: float, etiqueta: str = "", payload
             "vence": vence,
             "etiqueta": etiqueta or "",
             "payload": payload or {},
+            "recurrencia": {"type": "once"},
         }
         heapq.heappush(_heap, (vence, id_))
         _persistir()
@@ -274,7 +384,7 @@ def _registrar_programacion(tipo: str, vence: float, etiqueta: str = "", payload
     return id_
 
 
-def _resumen_evento(id_: str, tipo: str, objetivo: datetime, etiqueta: str = "", segundos: int | None = None, payload: dict | None = None) -> dict:
+def _resumen_evento(id_: str, tipo: str, objetivo: datetime, etiqueta: str = "", segundos: int | None = None, payload: dict | None = None, recurrencia: dict | None = None) -> dict:
     info = {
         "id": id_,
         "tipo": tipo,
@@ -282,6 +392,7 @@ def _resumen_evento(id_: str, tipo: str, objetivo: datetime, etiqueta: str = "",
         "hora": objetivo.strftime("%H:%M"),
         "vence_iso": objetivo.isoformat(),
         "payload": payload or {},
+        "recurrencia": recurrencia or {"type": "once"},
     }
     if segundos is not None:
         info["segundos"] = segundos
@@ -299,29 +410,42 @@ def programar_desde_texto(cuando: str, etiqueta: str = "") -> dict:
     return _resumen_evento(id_, "alarma", objetivo, etiqueta)
 
 
-def programar_tarea_desde_texto(cuando: str, tipo: str, etiqueta: str = "", payload: dict | None = None, default_hour: int = 9, default_minute: int = 0) -> dict:
-    info = resolver_fecha_hora_desde_texto(cuando, default_hour=default_hour, default_minute=default_minute)
+def programar_tarea_desde_texto(cuando: str, tipo: str, etiqueta: str = "", payload: dict | None = None, default_hour: int = 9, default_minute: int = 0, recurrencia: str = "", dias_semana: str = "") -> dict:
+    recurrence_info = _normalizar_recurrencia(recurrencia, dias_semana)
+    if recurrence_info["type"] == "once":
+        info = resolver_fecha_hora_desde_texto(cuando, default_hour=default_hour, default_minute=default_minute)
+    else:
+        objetivo = _resolver_primer_vencimiento_recurrente(cuando, recurrence_info, default_hour, default_minute)
+        info = {
+            "modo": "recurrente",
+            "objetivo": objetivo,
+            "vence_iso": objetivo.isoformat(),
+        }
     return programar_tarea_para_datetime(
         info["objetivo"],
         tipo=tipo,
         etiqueta=etiqueta,
         payload=payload,
         segundos=info.get("segundos"),
+        recurrencia=recurrence_info,
     )
 
 
-def programar_tarea_para_datetime(objetivo: datetime, tipo: str, etiqueta: str = "", payload: dict | None = None, segundos: int | None = None) -> dict:
+def programar_tarea_para_datetime(objetivo: datetime, tipo: str, etiqueta: str = "", payload: dict | None = None, segundos: int | None = None, recurrencia: dict | None = None) -> dict:
     if objetivo.tzinfo is None:
         objetivo = objetivo.replace(tzinfo=_ahora_local().tzinfo)
     id_ = _registrar_programacion(tipo, objetivo.timestamp(), etiqueta, payload=payload)
+    _timers[id_]["recurrencia"] = recurrencia or {"type": "once"}
     _debug_emit("task-created", {
         "id": id_,
         "type": tipo,
         "label": etiqueta or "",
         "due_ts": objetivo.timestamp(),
         "payload": payload or {},
+        "recurrence": _timers[id_]["recurrencia"],
     })
-    return _resumen_evento(id_, tipo, objetivo, etiqueta, segundos=segundos, payload=payload)
+    _persistir()
+    return _resumen_evento(id_, tipo, objetivo, etiqueta, segundos=segundos, payload=payload, recurrencia=_timers[id_]["recurrencia"])
 
 
 def _texto_fallback(info: dict) -> str:
@@ -335,14 +459,20 @@ def _texto_fallback(info: dict) -> str:
     if tipo == "musica":
         query = payload.get("query") or etiqueta
         return f"Tarea de música disparada: {query}"
+    if tipo == "luces":
+        accion = payload.get("action") or "cambio"
+        return f"Tarea de luces ejecutada: {accion} {etiqueta}".strip()
     return f"El tiempo de '{etiqueta}' se acabó, pringao. Muévete."
 
 
 def _disparar(id_: str):
-    info = _timers.pop(id_, None)
+    info = _timers.get(id_)
     if not info:
         _debug_emit("timer-fire-missing", {"id": id_})
         return
+    recurrencia = info.get("recurrencia") or {"type": "once"}
+    objetivo_actual = datetime.fromtimestamp(info["vence"], tz=_ahora_local().tzinfo)
+    proximo = _siguiente_recurrencia(objetivo_actual, recurrencia)
     evento = {
         "id": id_,
         "tipo": info["tipo"],
@@ -350,6 +480,7 @@ def _disparar(id_: str):
         "vence": info.get("vence"),
         "vence_iso": datetime.fromtimestamp(info["vence"], tz=_ahora_local().tzinfo).isoformat(),
         "payload": info.get("payload") or {},
+        "recurrencia": recurrencia,
     }
     _debug_emit("timer-fired", {
         "id": id_,
@@ -357,6 +488,7 @@ def _disparar(id_: str):
         "label": evento["etiqueta"] or "sin nombre",
         "due_ts": info.get("vence"),
         "payload": evento["payload"],
+        "recurrence": recurrencia,
     })
     if _callback:
         try:
@@ -370,6 +502,22 @@ def _disparar(id_: str):
         texto = _texto_fallback(evento)
         _debug_emit("timer-no-callback", {"id": id_, "type": evento["tipo"], "text_preview": texto[:160]})
         print(f"⏰ (sin callback) {texto}")
+    with _cond:
+        if id_ not in _timers:
+            _persistir()
+            return
+        if proximo is None:
+            _timers.pop(id_, None)
+        else:
+            _timers[id_]["vence"] = proximo.timestamp()
+            heapq.heappush(_heap, (proximo.timestamp(), id_))
+            _debug_emit("timer-rescheduled", {
+                "id": id_,
+                "type": evento["tipo"],
+                "next_due_ts": proximo.timestamp(),
+                "next_due_iso": proximo.isoformat(),
+                "recurrence": recurrencia,
+            })
     _persistir()
 
 
@@ -439,6 +587,8 @@ def listar() -> list[dict]:
                 "vence_iso": datetime.fromtimestamp(info["vence"], tz=_ahora_local().tzinfo).isoformat(),
                 "etiqueta": info.get("etiqueta", ""),
                 "payload": info.get("payload") or {},
+                "recurrencia": info.get("recurrencia") or {"type": "once"},
+                "recurrencia_texto": _formatear_recurrencia(info.get("recurrencia")),
             })
     out.sort(key=lambda d: d["vence_en_seg"])
     return out

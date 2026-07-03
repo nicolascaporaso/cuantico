@@ -14,6 +14,7 @@ import config
 
 _DEBUG_ENV_PATH = Path(__file__).resolve().parent.parent / ".dbg" / "unexpected-process-exit.env"
 _DEBUG_LOG_PATH = Path(config.STATE_DIR) / "unexpected-process-exit.log"
+_LOCAL_MPV_STDERR_PATH = Path(config.STATE_DIR) / "mpv-local.log"
 _mpv_process = None
 _mpv_route = None
 _socket_path = config.MPV_IPC_SOCKET_PATH
@@ -154,39 +155,42 @@ def _run_yt_dlp(args: list[str]) -> str:
     return salida
 
 
+def _leer_log_local_mpv(max_chars: int = 1200) -> str:
+    try:
+        if not _LOCAL_MPV_STDERR_PATH.exists():
+            return ""
+        data = _LOCAL_MPV_STDERR_PATH.read_text(encoding="utf-8", errors="replace")
+        return data[-max_chars:].strip()
+    except Exception:
+        return ""
+
+
+def _limpiar_url(url: str) -> str:
+    return (url or "").strip().strip("`").strip()
+
+
 def _buscar_videos(query: str, limit: int) -> list[dict]:
     query = (query or "").strip()
     if not query:
         raise ValueError("faltó la búsqueda de música")
 
     if query.startswith(("http://", "https://")):
-        data = json.loads(
-            _run_yt_dlp(["--dump-single-json", "--no-warnings", "--no-playlist", query])
-        )
-        return [{
-            "title": data.get("title") or query,
-            "webpage_url": data.get("webpage_url") or query,
-        }]
+        return [{"title": query, "webpage_url": query}]
 
     limit = max(1, int(limit))
-    # yt-dlp/YouTube a veces devuelve canales o playlists como primer resultado.
-    # Pedimos más resultados y filtramos manualmente solo videos reproducibles.
     fetch_limit = max(limit * 5, 8)
     target = f"ytsearch{fetch_limit}:{query}"
-    data = json.loads(
-        _run_yt_dlp(["--dump-single-json", "--flat-playlist", "--no-warnings", target])
-    )
+    data = json.loads(_run_yt_dlp(["--dump-single-json", "--flat-playlist", "--no-warnings", target]))
     entries = data.get("entries") or []
     resultados = []
     for entry in entries:
         if not entry:
             continue
-        url = (entry.get("url") or entry.get("webpage_url") or "").strip()
+        url = _limpiar_url(entry.get("url") or entry.get("webpage_url") or "")
         if url and not url.startswith("http"):
             url = f"https://www.youtube.com/watch?v={url}"
         if not url:
             continue
-
         lower_url = url.lower()
         es_video = "watch?v=" in lower_url or "youtu.be/" in lower_url
         if not es_video:
@@ -199,9 +203,8 @@ def _buscar_videos(query: str, limit: int) -> list[dict]:
                 },
             )
             continue
-
         resultados.append({
-            "title": entry.get("title") or url,
+            "title": (entry.get("title") or url).strip(),
             "webpage_url": url,
         })
         if len(resultados) >= limit:
@@ -210,30 +213,22 @@ def _buscar_videos(query: str, limit: int) -> list[dict]:
 
 
 def _resolver_audio_url(video_url: str) -> str:
-    salida = _run_yt_dlp(["--no-playlist", "-f", "bestaudio", "-g", video_url])
-    url = next((line.strip() for line in salida.splitlines() if line.strip()), "")
+    salida = _run_yt_dlp(["--no-playlist", "-f", "bestaudio/best", "-g", video_url])
+    url = next((_limpiar_url(line) for line in salida.splitlines() if line.strip()), "")
     if not url:
         raise RuntimeError("yt-dlp no devolvió una URL de audio reproducible")
     return url
 
 
-def _preparar_item_completo(video_url: str) -> dict:
-    """Una sola llamada a yt-dlp para metadata; la stream URL se resuelve aparte."""
-    data = json.loads(
-        _run_yt_dlp(
-            [
-                "--dump-single-json",
-                "--no-warnings",
-                "--no-playlist",
-                video_url,
-            ]
-        )
-    )
-    if not isinstance(data, dict):
-        raise RuntimeError("yt-dlp no devolvió metadata válida")
-    item = _normalizar_item(data)
-    item["stream_url"] = _resolver_audio_url(item["webpage_url"] or video_url)
-    return item
+def _preparar_item_rapido(result: dict) -> dict:
+    webpage_url = _limpiar_url(result.get("webpage_url") or "")
+    if not webpage_url:
+        raise RuntimeError("faltó la URL del video de YouTube")
+    return {
+        "title": (result.get("title") or webpage_url).strip(),
+        "webpage_url": webpage_url,
+        "stream_url": _resolver_audio_url(webpage_url),
+    }
 
 
 def _esperar_socket_mpv(timeout_seg: float = 8.0, poll_seg: float = 0.05) -> bool:
@@ -248,51 +243,8 @@ def _esperar_socket_mpv(timeout_seg: float = 8.0, poll_seg: float = 0.05) -> boo
     return False
 
 
-def _formatear_duracion(segundos: int | float | None) -> str:
-    if not segundos:
-        return ""
-    total = int(segundos)
-    minutos, seg = divmod(total, 60)
-    horas, minutos = divmod(minutos, 60)
-    if horas:
-        return f"{horas}h {minutos:02d}m"
-    return f"{minutos}:{seg:02d}"
-
-
-def _normalizar_item(metadata: dict) -> dict:
-    upload_date = str(metadata.get("upload_date") or "").strip()
-    upload_year = upload_date[:4] if len(upload_date) >= 4 else ""
-    item = {
-        "title": metadata.get("track") or metadata.get("title") or metadata.get("webpage_url") or "",
-        "webpage_url": metadata.get("webpage_url") or metadata.get("original_url") or "",
-        "duration": int(metadata.get("duration") or 0) or 0,
-        "uploader": metadata.get("uploader") or metadata.get("channel") or "",
-        "artist": metadata.get("artist") or metadata.get("album_artist") or metadata.get("creator") or "",
-        "track": metadata.get("track") or "",
-        "album": metadata.get("album") or "",
-        "view_count": int(metadata.get("view_count") or 0) or 0,
-        "upload_year": upload_year,
-        "abr": float(metadata.get("abr") or 0) or 0.0,
-        "tbr": float(metadata.get("tbr") or 0) or 0.0,
-        "filesize_approx": int(metadata.get("filesize_approx") or 0) or 0,
-    }
-    return item
-
-
-def _formatear_views(view_count: int) -> str:
-    if view_count >= 1_000_000:
-        return f"{view_count / 1_000_000:.1f} millones"
-    if view_count >= 1_000:
-        return f"{view_count / 1_000:.0f} mil"
-    if view_count > 0:
-        return str(view_count)
-    return ""
-
-
-def _asegurar_socket(timeout_seg: float = 8.0):
-    if _esperar_socket_mpv(timeout_seg=timeout_seg):
-        return
-    raise RuntimeError("mpv no abrió su socket IPC a tiempo")
+def _asegurar_socket(timeout_seg: float = 8.0) -> bool:
+    return _esperar_socket_mpv(timeout_seg=timeout_seg)
 
 
 def _iniciar_mpv(items: list[dict]):
@@ -312,7 +264,17 @@ def _iniciar_mpv(items: list[dict]):
             pass
 
     salida = altavoz.resolver_salida_audio()
-    altavoz.activar_salida_audio(salida)
+    activar_local_despues = salida.get("kind") == "alsa_local" and salida.get("needs_gpio")
+    stderr_target = subprocess.DEVNULL
+    stderr_handle = None
+    if activar_local_despues:
+        try:
+            _LOCAL_MPV_STDERR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            stderr_handle = open(_LOCAL_MPV_STDERR_PATH, "w", encoding="utf-8", errors="replace")
+            stderr_target = stderr_handle
+        except Exception as e:
+            _debug_emit("mpv-local-log-open-failed", {"error": str(e), "path": str(_LOCAL_MPV_STDERR_PATH)})
+
     cmd = [
         config.MPV_COMMAND,
         "--no-terminal",
@@ -325,16 +287,67 @@ def _iniciar_mpv(items: list[dict]):
         "--ao=alsa",
         f"--audio-device=alsa/{salida['device']}",
         f"--input-ipc-server={_socket_path}",
+        "--network-timeout=10",
         *[item["stream_url"] for item in items],
     ]
+    _debug_emit(
+        "mpv-launching",
+        {
+            "device": salida["device"],
+            "route_kind": salida["kind"],
+            "route_label": salida["label"],
+            "playlist_count": len(items),
+            "local_stderr_log": str(_LOCAL_MPV_STDERR_PATH) if activar_local_despues else "",
+        },
+    )
     try:
         _mpv_process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_target,
+        )
+        _debug_emit(
+            "mpv-popen-returned",
+            {
+                "pid": _mpv_process.pid,
+                "device": salida["device"],
+                "route_kind": salida["kind"],
+            },
         )
         _mpv_route = salida
-        _asegurar_socket()
+        socket_ready = _asegurar_socket(timeout_seg=12.0 if activar_local_despues else 8.0)
+        if not socket_ready:
+            stderr_preview = _leer_log_local_mpv()
+            if not _mpv_alive():
+                _debug_emit(
+                    "mpv-socket-timeout",
+                    {
+                        "device": salida["device"],
+                        "route_kind": salida["kind"],
+                        "error": "mpv terminó antes de abrir IPC",
+                        "stderr_preview": stderr_preview,
+                    },
+                )
+                raise RuntimeError(
+                    "mpv terminó antes de abrir su socket IPC"
+                    + (f" | stderr local: {stderr_preview[:300]}" if stderr_preview else "")
+                )
+            _debug_emit(
+                "mpv-ipc-delayed",
+                {
+                    "device": salida["device"],
+                    "route_kind": salida["kind"],
+                    "stderr_preview": stderr_preview,
+                },
+            )
+        if activar_local_despues:
+            altavoz.activar_salida_audio(salida)
+            _debug_emit(
+                "local-audio-activated-after-mpv-ready" if socket_ready else "local-audio-activated-with-delayed-ipc",
+                {"device": salida["device"], "label": salida["label"]},
+            )
+        else:
+            altavoz.activar_salida_audio(salida)
         threading.Thread(target=_watch_process, args=(_mpv_process,), daemon=True).start()
         _debug_emit(
             "mpv-started",
@@ -345,12 +358,19 @@ def _iniciar_mpv(items: list[dict]):
                 "route_label": salida["label"],
                 "playlist_count": len(items),
                 "direct_start": True,
+                "ipc_ready": socket_ready,
             },
         )
     except Exception:
         _cleanup_route()
         _mpv_process = None
         raise
+    finally:
+        if stderr_handle:
+            try:
+                stderr_handle.close()
+            except Exception:
+                pass
 
 
 def _ipc_command(command: list, *, retries: int = 8, retry_delay_seg: float = 0.12):
@@ -362,7 +382,7 @@ def _ipc_command(command: list, *, retries: int = 8, retry_delay_seg: float = 0.
     last_error = None
     for intento in range(retries):
         try:
-            if not _esperar_socket_mpv(timeout_seg=1.0, poll_seg=0.05):
+            if not _esperar_socket_mpv(timeout_seg=2.5, poll_seg=0.05):
                 raise RuntimeError("socket IPC de mpv todavía no existe")
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(3)
@@ -416,56 +436,31 @@ def preparar_reproduccion(query: str) -> dict:
     resultados = _buscar_videos(query, 1)
     if not resultados:
         return {"ok": False, "error": f"No encontré nada en YouTube para '{query}'"}
-
     try:
-        item = _preparar_item_completo(resultados[0]["webpage_url"])
+        item = _preparar_item_rapido(resultados[0])
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
-    _debug_emit(
-        "prepared-track",
-        {
-            "title": item["title"],
-            "direct_start": True,
-        },
-    )
-    return {
-        "ok": True,
-        "prepared": {
-            "items": [item],
-        },
-        "commentary": "",
-        "title": item["title"],
-    }
+    _debug_emit("prepared-track", {"title": item["title"], "direct_start": True})
+    return {"ok": True, "prepared": {"items": [item]}, "commentary": "", "title": item["title"]}
 
 
 def preparar_playlist(query: str) -> dict:
     resultados = _buscar_videos(query, config.YOUTUBE_PLAYLIST_SEARCH_LIMIT)
     if not resultados:
         return {"ok": False, "error": f"No encontré resultados en YouTube para '{query}'"}
-
     playlist = []
-    for idx, result in enumerate(resultados):
+    for result in resultados:
         try:
-            item = _preparar_item_completo(result["webpage_url"])
+            item = _preparar_item_rapido(result)
         except Exception as e:
             _debug_emit("prepare-playlist-item-failed", {"title": result.get("title"), "error": str(e)})
             continue
         playlist.append(item)
         if len(playlist) >= config.YOUTUBE_AUDIO_SEARCH_LIMIT:
             break
-
     if not playlist:
         return {"ok": False, "error": f"No pude extraer audio reproducible para '{query}'"}
-
-    return {
-        "ok": True,
-        "prepared": {
-            "items": playlist,
-        },
-        "commentary": "",
-        "title": playlist[0]["title"],
-    }
+    return {"ok": True, "prepared": {"items": playlist}, "commentary": "", "title": playlist[0]["title"]}
 
 
 def ejecutar_preparado(prepared: dict) -> bool:

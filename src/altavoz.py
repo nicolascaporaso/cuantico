@@ -94,7 +94,17 @@ def _resolver_salida():
 
 def resolver_salida_audio():
     """Expone la ruta de audio actual para otros reproductores del proyecto."""
-    return _resolver_salida()
+    salida = _resolver_salida()
+    _debug_emit(
+        "audio-route-resolved",
+        {
+            "route_kind": salida.get("kind"),
+            "device": salida.get("device"),
+            "label": salida.get("label"),
+            "needs_gpio": bool(salida.get("needs_gpio")),
+        },
+    )
+    return salida
 
 
 def activar_salida_audio(salida: dict):
