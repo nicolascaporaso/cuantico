@@ -4,6 +4,7 @@ import traceback
 import sys
 import os
 import json
+import gc
 import urllib.request
 import signal
 import atexit
@@ -412,6 +413,7 @@ def _ejecutar_pendientes_musica():
     ejecutadas = 0
     if _pendientes_musica:
         print(f"🎧 Ejecutando {len(_pendientes_musica)} acción(es) de música diferida(s)…")
+        _pre_music_cleanup()
     while _pendientes_musica:
         fn, args = _pendientes_musica.pop(0)
         try:
@@ -507,6 +509,7 @@ def _ejecutar_musica_programada(evento: dict):
     modo = (payload.get("mode") or "cancion").strip().lower()
     if not query:
         raise ValueError("la tarea programada de música no trae consulta")
+    _pre_music_cleanup()
     music_router.detener_todo()
     if modo == "playlist":
         ok = music_router.reproducir_playlist(query, backend=backend)
@@ -540,6 +543,46 @@ def _ejecutar_luces_programadas(evento: dict):
     })
     if not ok:
         _hablar(f"No pude {accion} las luces programadas {selector or 'de casa'}.", "embolado")
+
+
+def _mem_available_kb() -> int | None:
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    parts = line.split()
+                    return int(parts[1])
+    except Exception:
+        return None
+    return None
+
+
+def _memory_snapshot() -> dict:
+    return {
+        "mem_available_kb": _mem_available_kb(),
+        "pending_music_actions": len(_pendientes_musica),
+        "tts_active": altavoz.tts_activo(),
+    }
+
+
+def _pre_music_cleanup():
+    before = _memory_snapshot()
+    _debug_emit("M", "pre-music-cleanup-start", before)
+    tts_cleanup = altavoz.limpiar_tts()
+    music_cleanup = music_router.limpiar_para_reproduccion(detener_reproduccion=False)
+    gc_collected = gc.collect()
+    after = _memory_snapshot()
+    _debug_emit(
+        "M",
+        "pre-music-cleanup-end",
+        {
+            "before": before,
+            "after": after,
+            "tts_cleanup": tts_cleanup,
+            "music_cleanup": music_cleanup,
+            "gc_collected": gc_collected,
+        },
+    )
 
 
 def _callback_timer(evento: dict):

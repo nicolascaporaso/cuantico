@@ -82,12 +82,36 @@ def _mpv_alive():
     return _mpv_process is not None and _mpv_process.poll() is None
 
 
-def inicializar():
-    if _socket_path and os.path.exists(_socket_path):
+def _ensure_socket_path() -> str:
+    global _socket_path
+    if not _socket_path:
+        _socket_path = config.MPV_IPC_SOCKET_PATH
+    return _socket_path
+
+
+def _cleanup_socket():
+    socket_path = _ensure_socket_path()
+    if socket_path and os.path.exists(socket_path):
         try:
-            os.unlink(_socket_path)
-        except OSError:
-            pass
+            os.unlink(socket_path)
+            _debug_emit("mpv-ipc-cleanup", {"socket_path": socket_path, "removed": True})
+        except Exception as e:
+            _debug_emit("mpv-ipc-cleanup-failed", {"socket_path": socket_path, "error": str(e)})
+
+
+def _cleanup_route():
+    global _mpv_route
+    if _mpv_route:
+        try:
+            altavoz.desactivar_salida_audio(_mpv_route)
+        except Exception as e:
+            _debug_emit("mpv-route-cleanup-failed", {"error": str(e)})
+    _mpv_route = None
+
+
+def inicializar():
+    _ensure_socket_path()
+    _cleanup_socket()
 
 
 # ---------------- YT-DLP OPTIMIZADO (FIX CLAVE) ----------------
@@ -182,6 +206,7 @@ def _iniciar_mpv(items):
         detener()
 
     salida = altavoz.resolver_salida_audio()
+    socket_path = _ensure_socket_path()
 
     cmd = [
         config.MPV_COMMAND,
@@ -189,7 +214,7 @@ def _iniciar_mpv(items):
         "--force-window=no",
         "--cache=yes",
         "--cache-secs=15",
-        "--input-ipc-server=" + _socket_path,
+        "--input-ipc-server=" + socket_path,
         *[i["stream_url"] for i in items],
     ]
 
@@ -213,7 +238,10 @@ def _iniciar_mpv(items):
 def _watch(proc):
     global _mpv_process
     proc.wait()
-    _mpv_process = None
+    if _mpv_process is proc:
+        _mpv_process = None
+        _cleanup_route()
+        _cleanup_socket()
 
 
 # ---------------- API PUBLICA ----------------
@@ -295,9 +323,10 @@ def volumen(delta: int):
 
 def _ipc(cmd):
     payload = json.dumps({"command": cmd}).encode()
+    socket_path = _ensure_socket_path()
 
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.connect(_socket_path)
+        s.connect(socket_path)
         s.sendall(payload + b"\n")
         return s.recv(4096)
 
@@ -306,10 +335,12 @@ def _ipc(cmd):
 
 def detener():
     """Detiene reproducción de mpv de forma segura y limpia"""
-    global _mpv_process, _socket_path
+    global _mpv_process
 
     # 1. Si no hay proceso vivo, salir rápido
     if _mpv_process is None:
+        _cleanup_route()
+        _cleanup_socket()
         return False
 
     try:
@@ -331,15 +362,26 @@ def detener():
         pass
 
     _mpv_process = None
-
-    # 4. Limpieza de socket IPC (CRÍTICO en leaks)
-    if _socket_path:
-        try:
-            if os.path.exists(_socket_path):
-                os.unlink(_socket_path)
-        except Exception:
-            pass
-
-    _socket_path = None
+    _cleanup_route()
+    _cleanup_socket()
 
     return True
+
+
+def limpiar_recursos(detener_reproduccion: bool = False) -> dict:
+    stopped = False
+    if detener_reproduccion:
+        stopped = detener()
+    else:
+        if not _mpv_alive():
+            _cleanup_route()
+            _cleanup_socket()
+    estado = {
+        "stopped": stopped,
+        "mpv_alive": _mpv_alive(),
+        "socket_path": _ensure_socket_path(),
+        "socket_exists": bool(_ensure_socket_path() and os.path.exists(_ensure_socket_path())),
+    }
+    _debug_emit("music-cleanup", estado)
+    heartbeat("mpv", {"state": "cleanup", **estado})
+    return estado

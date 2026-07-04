@@ -30,6 +30,8 @@ _DEBUG_LOG_PATH = Path(config.STATE_DIR) / "unexpected-process-exit.log"
 _SOX_STDERR_PATH = Path(config.STATE_DIR) / "tts-sox.log"
 _APLAY_STDERR_PATH = Path(config.STATE_DIR) / "tts-aplay.log"
 _tts_lock = threading.Lock()
+_tts_state_lock = threading.Lock()
+_tts_current_process = None
 
 
 def _debug_emit(msg: str, data: dict | None = None):
@@ -239,6 +241,63 @@ def _lanzar_mpg123():
     return Pipeline(sox_proc, aplay_proc, salida, sox_stderr, aplay_stderr)
 
 
+def _set_tts_current_process(process):
+    global _tts_current_process
+    with _tts_state_lock:
+        _tts_current_process = process
+
+
+def _clear_tts_current_process(process=None):
+    global _tts_current_process
+    with _tts_state_lock:
+        if process is None or _tts_current_process is process:
+            _tts_current_process = None
+
+
+def tts_activo() -> bool:
+    with _tts_state_lock:
+        proceso = _tts_current_process
+    if not proceso:
+        return False
+    return proceso._a.poll() is None or proceso._b.poll() is None
+
+
+def detener_tts() -> bool:
+    with _tts_state_lock:
+        proceso = _tts_current_process
+    if not proceso:
+        return False
+    _debug_emit(
+        "tts-stop-requested",
+        {
+            "thread": threading.current_thread().name,
+            "route_kind": proceso.route.get("kind"),
+            "route_label": proceso.route.get("label"),
+        },
+    )
+    try:
+        try:
+            proceso.stdin.close()
+        except Exception:
+            pass
+        proceso.terminate()
+        desactivar_salida_audio(proceso.route)
+    finally:
+        _clear_tts_current_process(proceso)
+    return True
+
+
+def limpiar_tts() -> dict:
+    detenido = detener_tts()
+    estado = {
+        "stopped": detenido,
+        "active_after": tts_activo(),
+    }
+    _debug_emit("tts-cleanup", estado)
+    heartbeat("tts-playback", {"state": "cleanup", **estado})
+    return estado
+
+
 def _tts_a_tuberia(texto, stdin):
     """Pide audio a ElevenLabs (streaming) y escribe bytes directos a mpg123."""
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream?output_format=mp3_22050_32"
@@ -410,6 +469,7 @@ def hablar(texto, emocion):
         print(f"🔊 [Altavoz] Escupiendo audio ({emocion})...")
         _debug_emit("tts-playback-start", {"emotion": emocion, "text_preview": texto[:160]})
         proceso = _lanzar_mpg123()
+        _set_tts_current_process(proceso)
         activar_salida_audio(proceso.route)
         try:
             _tts_a_tuberia(texto, proceso.stdin)
@@ -438,6 +498,7 @@ def hablar(texto, emocion):
                 if ended:
                     _debug_emit("tts-playback-finished", ended)
             desactivar_salida_audio(proceso.route)
+            _clear_tts_current_process(proceso)
 
 
 def hablar_stream(generador_texto, emocion="sarcasmo"):
@@ -462,6 +523,7 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
         print(f"🔊 [Altavoz] Streaming paralelo ({emocion})...")
         _debug_emit("tts-stream-start", {"emotion": emocion})
         proceso = _lanzar_mpg123()
+        _set_tts_current_process(proceso)
         activar_salida_audio(proceso.route)
         buffer = ""
         try:
@@ -500,3 +562,4 @@ def hablar_stream(generador_texto, emocion="sarcasmo"):
                 if ended:
                     _debug_emit("tts-stream-finished", ended)
             desactivar_salida_audio(proceso.route)
+            _clear_tts_current_process(proceso)
