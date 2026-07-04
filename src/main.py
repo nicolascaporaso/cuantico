@@ -25,6 +25,7 @@ import llamada
 import recuerdos
 import cuantico_profiles as profile
 from openrouter_client import OpenRouterChatSession
+from runtime_debug import heartbeat, mark_operation_end, mark_operation_start, start_watchdog
 
 USER_SHORT_NAME = config.USER_SHORT_NAME
 USER_FULL_NAME = config.USER_FULL_NAME
@@ -106,6 +107,14 @@ except Exception as _debug_fh_error:
     _debug_emit("A", "faulthandler-enable-failed", {"error": str(_debug_fh_error)})
 atexit.register(lambda: _debug_emit("A", "process-exit", {"timestamp": config.now_local().isoformat()}))
 _debug_emit("A", "module-loaded", {"user_short_name": USER_SHORT_NAME, "user_full_name": USER_FULL_NAME, "profile": ACTIVE_PROFILE_NAME})
+
+
+def _watchdog_emit(msg: str, data: dict | None = None):
+    _debug_emit("W", msg, data)
+
+
+start_watchdog(_watchdog_emit, interval_sec=30.0, slow_after_sec=20.0)
+heartbeat("main", {"state": "startup"})
 # #endregion
 
 
@@ -535,6 +544,14 @@ def _ejecutar_luces_programadas(evento: dict):
 
 def _callback_timer(evento: dict):
     """Invocado por el scheduler de timers al vencer un evento persistido."""
+    timer_token = mark_operation_start(
+        "timers-callback",
+        {
+            "type": evento.get("tipo"),
+            "label": evento.get("etiqueta", ""),
+        },
+    )
+    heartbeat("timers", {"state": "callback-enter", "type": evento.get("tipo")})
     _debug_emit("T", "alarm-callback-enter", {
         "type": evento.get("tipo"),
         "label": evento.get("etiqueta", ""),
@@ -551,7 +568,15 @@ def _callback_timer(evento: dict):
         luces.cambiar_estado("esperando")
         _debug_emit("T", "alarm-callback-state-restored", {"state": "esperando"})
         _debug_emit("T", "alarm-callback-exit", {"type": evento.get("tipo")})
+        ended = mark_operation_end(timer_token, {"ok": True})
+        if ended:
+            _debug_emit("T", "alarm-callback-finished", ended)
+        heartbeat("timers", {"state": "callback-exit", "type": evento.get("tipo")})
     except Exception as e:
+        ended = mark_operation_end(timer_token, {"ok": False, "error": str(e)})
+        if ended:
+            _debug_emit("T", "alarm-callback-finished", ended)
+        heartbeat("timers", {"state": "callback-error", "type": evento.get("tipo"), "error": str(e)})
         _debug_emit("T", "alarm-callback-error", {
             "type": evento.get("tipo"),
             "error": str(e),
@@ -1131,6 +1156,7 @@ def _crear_chat_turno(system_prompt, funciones):
 
 print("🌐 Web search + function calling activado vía OpenRouter.")
 _debug_emit("A", "openrouter-ready", {"model": config.OPENROUTER_MODEL, "profile": ACTIVE_PROFILE_NAME})
+heartbeat("openrouter", {"state": "ready", "model": config.OPENROUTER_MODEL})
 
 def _prompt_con_memoria() -> str:
     """SYSTEM_PROMPT + bloque de recuerdos actuales. Se re-construye en cada nueva conversación para que los recuerdos añadidos ahora mismo entren la próxima vez."""
@@ -1153,7 +1179,13 @@ try:
         # --- MODO RADAR: espera wake word ---
         luces.cambiar_estado("esperando")
         _debug_emit("B", "loop-radar-enter")
+        listen_token = mark_operation_start("deepgram-listen", {"mode": "wake"})
+        heartbeat("deepgram", {"state": "wake-listen-start"})
         texto_usuario = micro.escuchar()
+        ended = mark_operation_end(listen_token, {"has_text": bool(texto_usuario)})
+        if ended:
+            _debug_emit("B", "wake-listen-finished", ended)
+        heartbeat("deepgram", {"state": "wake-listen-end", "has_text": bool(texto_usuario)})
         _debug_emit("B", "wake-listen-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
         # Nueva conversación. Reconstruimos la config cada vez para que los recuerdos añadidos
@@ -1190,11 +1222,17 @@ try:
             luces.cambiar_estado("pensando")
             print("🤖 Cuántico está procesando...")
             _debug_emit("C", "assistant-processing", {"text_preview": texto_usuario[:120]})
+            chat_token = mark_operation_start("openrouter-chat", {"text_preview": texto_usuario[:120]})
+            heartbeat("openrouter", {"state": "request-start", "text_preview": texto_usuario[:120]})
             try:
                 # El adaptador de OpenRouter resuelve las tool-calls locales y la búsqueda
                 # web antes de devolver el texto final. Sin streaming aquí para que el TTS
                 # no se solape con tool-calls intermedias.
                 response = chat.send_message(texto_usuario)
+                chat_done = mark_operation_end(chat_token, {"ok": True, "has_text": bool((response.text or "").strip())})
+                if chat_done:
+                    _debug_emit("C", "assistant-processing-finished", chat_done)
+                heartbeat("openrouter", {"state": "request-end", "has_text": bool((response.text or "").strip())})
                 texto_respuesta = (response.text or "").strip()
                 silenciar_tts_musica = _tomar_silencio_tts_musica()
                 comentario_musica = _tomar_comentario_musica()
@@ -1241,12 +1279,22 @@ try:
                     continue
 
             except Exception as e:
+                chat_done = mark_operation_end(chat_token, {"ok": False, "error": str(e)})
+                if chat_done:
+                    _debug_emit("C", "assistant-processing-finished", chat_done)
+                heartbeat("openrouter", {"state": "request-error", "error": str(e)})
                 print(f"⚠️ Error en OpenRouter: {e}")
                 _debug_emit("C", "conversation-exception", {"error": str(e), "traceback": traceback.format_exc()})
                 _hablar(f"Se me ha frito una neurona, {USER_SHORT_NAME}. Repite eso.", "enfadado")
 
             # Seguimos escuchando sin wake word
+            followup_token = mark_operation_start("deepgram-listen", {"mode": "followup", "timeout_ms": 8000})
+            heartbeat("deepgram", {"state": "followup-listen-start", "timeout_ms": 8000})
             texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
+            ended = mark_operation_end(followup_token, {"has_text": bool(texto_usuario)})
+            if ended:
+                _debug_emit("B", "followup-listen-finished", ended)
+            heartbeat("deepgram", {"state": "followup-listen-end", "has_text": bool(texto_usuario)})
             _debug_emit("B", "followup-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
 except KeyboardInterrupt:

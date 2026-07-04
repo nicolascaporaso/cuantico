@@ -10,6 +10,7 @@ from pathlib import Path
 
 import altavoz
 import config
+from runtime_debug import dump_threads, heartbeat, mark_operation_end, mark_operation_start
 
 
 _DEBUG_ENV_PATH = Path(__file__).resolve().parent.parent / ".dbg" / "unexpected-process-exit.env"
@@ -232,15 +233,37 @@ def _preparar_item_rapido(result: dict) -> dict:
 
 
 def _esperar_socket_mpv(timeout_seg: float = 8.0, poll_seg: float = 0.05) -> bool:
+    wait_token = mark_operation_start(
+        "mpv-socket-wait",
+        {"timeout_sec": timeout_seg, "socket_path": _socket_path},
+    )
+    heartbeat("mpv", {"state": "socket-wait-start", "timeout_sec": timeout_seg})
+    _debug_emit("mpv-socket-wait-start", {"timeout_sec": timeout_seg, "socket_path": _socket_path})
     inicio = time.time()
-    while time.time() - inicio < timeout_seg:
-        if _mpv_process and _mpv_process.poll() is not None:
-            _debug_emit("mpv-socket-wait-process-exited", {"returncode": _mpv_process.returncode})
-            return False
-        if _socket_path and os.path.exists(_socket_path):
-            return True
-        time.sleep(poll_seg)
-    return False
+    ready = False
+    try:
+        while time.time() - inicio < timeout_seg:
+            if _mpv_process and _mpv_process.poll() is not None:
+                _debug_emit("mpv-socket-wait-process-exited", {"returncode": _mpv_process.returncode})
+                return False
+            if _socket_path and os.path.exists(_socket_path):
+                ready = True
+                return True
+            time.sleep(poll_seg)
+        return False
+    finally:
+        elapsed = round(time.time() - inicio, 3)
+        ended = mark_operation_end(wait_token, {"ready": ready, "elapsed_sec": elapsed})
+        if ended:
+            _debug_emit("mpv-socket-wait-end", ended)
+        else:
+            _debug_emit("mpv-socket-wait-end", {"ready": ready, "elapsed_sec": elapsed})
+        heartbeat("mpv", {"state": "socket-wait-end", "ready": ready, "elapsed_sec": elapsed})
+        if not ready and elapsed >= timeout_seg:
+            dump_threads(
+                "mpv-socket-wait-timeout",
+                {"timeout_sec": timeout_seg, "socket_path": _socket_path},
+            )
 
 
 def _asegurar_socket(timeout_seg: float = 8.0) -> bool:
@@ -300,6 +323,7 @@ def _iniciar_mpv(items: list[dict]):
             "local_stderr_log": str(_LOCAL_MPV_STDERR_PATH) if activar_local_despues else "",
         },
     )
+    heartbeat("mpv", {"state": "launching", "playlist_count": len(items), "route_kind": salida["kind"]})
     try:
         _mpv_process = subprocess.Popen(
             cmd,
@@ -348,7 +372,7 @@ def _iniciar_mpv(items: list[dict]):
             )
         else:
             altavoz.activar_salida_audio(salida)
-        threading.Thread(target=_watch_process, args=(_mpv_process,), daemon=True).start()
+        threading.Thread(target=_watch_process, args=(_mpv_process,), name="mpv-process-watch", daemon=True).start()
         _debug_emit(
             "mpv-started",
             {
@@ -361,7 +385,9 @@ def _iniciar_mpv(items: list[dict]):
                 "ipc_ready": socket_ready,
             },
         )
+        heartbeat("mpv", {"state": "started", "ipc_ready": socket_ready, "playlist_count": len(items)})
     except Exception:
+        heartbeat("mpv", {"state": "start-error"})
         _cleanup_route()
         _mpv_process = None
         raise
@@ -378,6 +404,7 @@ def _ipc_command(command: list, *, retries: int = 8, retry_delay_seg: float = 0.
     if not _mpv_alive():
         raise RuntimeError("mpv no está corriendo")
 
+    heartbeat("mpv", {"state": "ipc-command", "command": command})
     payload = json.dumps({"command": command}, ensure_ascii=False).encode("utf-8") + b"\n"
     last_error = None
     for intento in range(retries):
