@@ -568,6 +568,7 @@ def _memory_snapshot() -> dict:
 def _pre_music_cleanup():
     before = _memory_snapshot()
     _debug_emit("M", "pre-music-cleanup-start", before)
+    mic_cleanup = micro.suspender("music-playback")
     tts_cleanup = altavoz.limpiar_tts()
     music_cleanup = music_router.limpiar_para_reproduccion(detener_reproduccion=False)
     gc_collected = gc.collect()
@@ -578,11 +579,41 @@ def _pre_music_cleanup():
         {
             "before": before,
             "after": after,
+            "mic_cleanup": mic_cleanup,
             "tts_cleanup": tts_cleanup,
             "music_cleanup": music_cleanup,
             "gc_collected": gc_collected,
         },
     )
+
+
+def _sincronizar_microfono_con_musica(activa: bool, estado: dict | None = None):
+    estado = estado or {}
+    if activa:
+        if not micro.esta_suspendido():
+            mic_info = micro.suspender("music-playback")
+            _debug_emit("B", "music-mic-suspended", {"music": estado, "micro": mic_info})
+    else:
+        if micro.esta_suspendido():
+            mic_info = micro.reanudar()
+            _debug_emit("B", "music-mic-resumed", {"music": estado, "micro": mic_info})
+
+
+def _esperar_musica_activa():
+    activa, estado = music_router.estado_reproduccion()
+    if not activa:
+        _sincronizar_microfono_con_musica(False, estado)
+        return False
+    _sincronizar_microfono_con_musica(True, estado)
+    _debug_emit("B", "music-radar-block-start", estado)
+    heartbeat("music-playback", {"state": "radar-blocked", **estado})
+    while activa:
+        time.sleep(0.75)
+        activa, estado = music_router.estado_reproduccion()
+        heartbeat("music-playback", {"state": "radar-blocked", **estado})
+    _debug_emit("B", "music-radar-block-end", estado)
+    _sincronizar_microfono_con_musica(False, estado)
+    return True
 
 
 def _callback_timer(evento: dict):
@@ -1219,12 +1250,20 @@ _restart_requested = False
 
 try:
     while True:
+        if _esperar_musica_activa():
+            continue
         # --- MODO RADAR: espera wake word ---
         luces.cambiar_estado("esperando")
         _debug_emit("B", "loop-radar-enter")
         listen_token = mark_operation_start("deepgram-listen", {"mode": "wake"})
         heartbeat("deepgram", {"state": "wake-listen-start"})
-        texto_usuario = micro.escuchar()
+        try:
+            texto_usuario = micro.escuchar()
+        except micro.MicrofonoSuspendido:
+            _debug_emit("B", "wake-listen-interrupted-by-music")
+            heartbeat("deepgram", {"state": "wake-listen-suspended"})
+            time.sleep(0.2)
+            continue
         ended = mark_operation_end(listen_token, {"has_text": bool(texto_usuario)})
         if ended:
             _debug_emit("B", "wake-listen-finished", ended)
@@ -1241,7 +1280,12 @@ try:
             if not texto_usuario or texto_usuario.strip() == "":
                 print("☁️  No he entendido nada.")
                 _debug_emit("B", "empty-user-text")
-                texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
+                try:
+                    texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
+                except micro.MicrofonoSuspendido:
+                    _debug_emit("B", "followup-empty-interrupted-by-music")
+                    en_conversacion = False
+                    continue
                 if not texto_usuario:
                     _debug_emit("B", "followup-timeout-after-empty")
                     en_conversacion = False
@@ -1333,7 +1377,13 @@ try:
             # Seguimos escuchando sin wake word
             followup_token = mark_operation_start("deepgram-listen", {"mode": "followup", "timeout_ms": 8000})
             heartbeat("deepgram", {"state": "followup-listen-start", "timeout_ms": 8000})
-            texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
+            try:
+                texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
+            except micro.MicrofonoSuspendido:
+                _debug_emit("B", "followup-interrupted-by-music")
+                heartbeat("deepgram", {"state": "followup-listen-suspended"})
+                en_conversacion = False
+                continue
             ended = mark_operation_end(followup_token, {"has_text": bool(texto_usuario)})
             if ended:
                 _debug_emit("B", "followup-listen-finished", ended)

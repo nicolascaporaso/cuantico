@@ -283,28 +283,28 @@ def reproducir(query: str):
 def reanudar():
     if not _mpv_alive():
         return False
-    _ipc(["set_property", "pause", False])
+    _ipc_call(["set_property", "pause", False])
     return True
 
 
 def pausar():
     if not _mpv_alive():
         return False
-    _ipc(["set_property", "pause", True])
+    _ipc_call(["set_property", "pause", True])
     return True
 
 
 def siguiente():
     if not _mpv_alive():
         return False
-    _ipc(["playlist-next", "force"])
+    _ipc_call(["playlist-next", "force"])
     return True
 
 
 def anterior():
     if not _mpv_alive():
         return False
-    _ipc(["playlist-prev", "force"])
+    _ipc_call(["playlist-prev", "force"])
     return True
 
 
@@ -312,11 +312,40 @@ def volumen(delta: int):
     if not _mpv_alive():
         return False
 
-    vol = _ipc(["get_property", "volume"]) or 50
-    new = max(0, min(100, int(vol) + delta))
+    vol = _ipc_call(["get_property", "volume"])
+    actual = int(float(vol if vol is not None else 50))
+    new = max(0, min(100, actual + delta))
 
-    _ipc(["set_property", "volume", new])
+    _ipc_call(["set_property", "volume", new])
     return True
+
+
+def estado_reproduccion() -> dict:
+    if not _mpv_alive():
+        return {"backend": "youtube", "active": False, "paused": False, "reason": "process-not-running"}
+    try:
+        paused = bool(_ipc_call(["get_property", "pause"]))
+        idle_active = bool(_ipc_call(["get_property", "idle-active"]))
+        active = not paused and not idle_active
+        return {
+            "backend": "youtube",
+            "active": active,
+            "paused": paused,
+            "idle_active": idle_active,
+            "reason": "playing" if active else ("paused" if paused else "idle"),
+        }
+    except Exception as e:
+        return {
+            "backend": "youtube",
+            "active": True,
+            "paused": False,
+            "reason": "ipc-unavailable",
+            "error": str(e),
+        }
+
+
+def esta_reproduciendo() -> bool:
+    return bool(estado_reproduccion().get("active"))
 
 
 # ---------------- IPC ----------------
@@ -329,6 +358,15 @@ def _ipc(cmd):
         s.connect(socket_path)
         s.sendall(payload + b"\n")
         return s.recv(4096)
+
+
+def _ipc_call(cmd):
+    raw = _ipc(cmd)
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        return None
+    return data.get("data")
 
 
 # ---------------- FIX CRÍTICO (ESTO TE ROMPIA TODO) ----------------
