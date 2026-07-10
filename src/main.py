@@ -4,7 +4,6 @@ import traceback
 import sys
 import os
 import json
-import gc
 import urllib.request
 import signal
 import atexit
@@ -26,7 +25,6 @@ import llamada
 import recuerdos
 import cuantico_profiles as profile
 from openrouter_client import OpenRouterChatSession
-from runtime_debug import heartbeat, mark_operation_end, mark_operation_start, start_watchdog
 
 USER_SHORT_NAME = config.USER_SHORT_NAME
 USER_FULL_NAME = config.USER_FULL_NAME
@@ -108,14 +106,6 @@ except Exception as _debug_fh_error:
     _debug_emit("A", "faulthandler-enable-failed", {"error": str(_debug_fh_error)})
 atexit.register(lambda: _debug_emit("A", "process-exit", {"timestamp": config.now_local().isoformat()}))
 _debug_emit("A", "module-loaded", {"user_short_name": USER_SHORT_NAME, "user_full_name": USER_FULL_NAME, "profile": ACTIVE_PROFILE_NAME})
-
-
-def _watchdog_emit(msg: str, data: dict | None = None):
-    _debug_emit("W", msg, data)
-
-
-start_watchdog(_watchdog_emit, interval_sec=30.0, slow_after_sec=20.0)
-heartbeat("main", {"state": "startup"})
 # #endregion
 
 
@@ -413,7 +403,6 @@ def _ejecutar_pendientes_musica():
     ejecutadas = 0
     if _pendientes_musica:
         print(f"🎧 Ejecutando {len(_pendientes_musica)} acción(es) de música diferida(s)…")
-        _pre_music_cleanup()
     while _pendientes_musica:
         fn, args = _pendientes_musica.pop(0)
         try:
@@ -509,7 +498,6 @@ def _ejecutar_musica_programada(evento: dict):
     modo = (payload.get("mode") or "cancion").strip().lower()
     if not query:
         raise ValueError("la tarea programada de música no trae consulta")
-    _pre_music_cleanup()
     music_router.detener_todo()
     if modo == "playlist":
         ok = music_router.reproducir_playlist(query, backend=backend)
@@ -545,87 +533,8 @@ def _ejecutar_luces_programadas(evento: dict):
         _hablar(f"No pude {accion} las luces programadas {selector or 'de casa'}.", "embolado")
 
 
-def _mem_available_kb() -> int | None:
-    try:
-        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("MemAvailable:"):
-                    parts = line.split()
-                    return int(parts[1])
-    except Exception:
-        return None
-    return None
-
-
-def _memory_snapshot() -> dict:
-    return {
-        "mem_available_kb": _mem_available_kb(),
-        "pending_music_actions": len(_pendientes_musica),
-        "tts_active": altavoz.tts_activo(),
-    }
-
-
-def _pre_music_cleanup():
-    before = _memory_snapshot()
-    _debug_emit("M", "pre-music-cleanup-start", before)
-    mic_cleanup = micro.suspender("music-playback")
-    tts_cleanup = altavoz.limpiar_tts()
-    music_cleanup = music_router.limpiar_para_reproduccion(detener_reproduccion=False)
-    gc_collected = gc.collect()
-    after = _memory_snapshot()
-    _debug_emit(
-        "M",
-        "pre-music-cleanup-end",
-        {
-            "before": before,
-            "after": after,
-            "mic_cleanup": mic_cleanup,
-            "tts_cleanup": tts_cleanup,
-            "music_cleanup": music_cleanup,
-            "gc_collected": gc_collected,
-        },
-    )
-
-
-def _sincronizar_microfono_con_musica(activa: bool, estado: dict | None = None):
-    estado = estado or {}
-    if activa:
-        if not micro.esta_suspendido():
-            mic_info = micro.suspender("music-playback")
-            _debug_emit("B", "music-mic-suspended", {"music": estado, "micro": mic_info})
-    else:
-        if micro.esta_suspendido():
-            mic_info = micro.reanudar()
-            _debug_emit("B", "music-mic-resumed", {"music": estado, "micro": mic_info})
-
-
-def _esperar_musica_activa():
-    activa, estado = music_router.estado_reproduccion()
-    if not activa:
-        _sincronizar_microfono_con_musica(False, estado)
-        return False
-    _sincronizar_microfono_con_musica(True, estado)
-    _debug_emit("B", "music-radar-block-start", estado)
-    heartbeat("music-playback", {"state": "radar-blocked", **estado})
-    while activa:
-        time.sleep(0.75)
-        activa, estado = music_router.estado_reproduccion()
-        heartbeat("music-playback", {"state": "radar-blocked", **estado})
-    _debug_emit("B", "music-radar-block-end", estado)
-    _sincronizar_microfono_con_musica(False, estado)
-    return True
-
-
 def _callback_timer(evento: dict):
     """Invocado por el scheduler de timers al vencer un evento persistido."""
-    timer_token = mark_operation_start(
-        "timers-callback",
-        {
-            "type": evento.get("tipo"),
-            "label": evento.get("etiqueta", ""),
-        },
-    )
-    heartbeat("timers", {"state": "callback-enter", "type": evento.get("tipo")})
     _debug_emit("T", "alarm-callback-enter", {
         "type": evento.get("tipo"),
         "label": evento.get("etiqueta", ""),
@@ -642,15 +551,7 @@ def _callback_timer(evento: dict):
         luces.cambiar_estado("esperando")
         _debug_emit("T", "alarm-callback-state-restored", {"state": "esperando"})
         _debug_emit("T", "alarm-callback-exit", {"type": evento.get("tipo")})
-        ended = mark_operation_end(timer_token, {"ok": True})
-        if ended:
-            _debug_emit("T", "alarm-callback-finished", ended)
-        heartbeat("timers", {"state": "callback-exit", "type": evento.get("tipo")})
     except Exception as e:
-        ended = mark_operation_end(timer_token, {"ok": False, "error": str(e)})
-        if ended:
-            _debug_emit("T", "alarm-callback-finished", ended)
-        heartbeat("timers", {"state": "callback-error", "type": evento.get("tipo"), "error": str(e)})
         _debug_emit("T", "alarm-callback-error", {
             "type": evento.get("tipo"),
             "error": str(e),
@@ -1230,7 +1131,6 @@ def _crear_chat_turno(system_prompt, funciones):
 
 print("🌐 Web search + function calling activado vía OpenRouter.")
 _debug_emit("A", "openrouter-ready", {"model": config.OPENROUTER_MODEL, "profile": ACTIVE_PROFILE_NAME})
-heartbeat("openrouter", {"state": "ready", "model": config.OPENROUTER_MODEL})
 
 def _prompt_con_memoria() -> str:
     """SYSTEM_PROMPT + bloque de recuerdos actuales. Se re-construye en cada nueva conversación para que los recuerdos añadidos ahora mismo entren la próxima vez."""
@@ -1250,24 +1150,10 @@ _restart_requested = False
 
 try:
     while True:
-        if _esperar_musica_activa():
-            continue
         # --- MODO RADAR: espera wake word ---
         luces.cambiar_estado("esperando")
         _debug_emit("B", "loop-radar-enter")
-        listen_token = mark_operation_start("deepgram-listen", {"mode": "wake"})
-        heartbeat("deepgram", {"state": "wake-listen-start"})
-        try:
-            texto_usuario = micro.escuchar()
-        except micro.MicrofonoSuspendido:
-            _debug_emit("B", "wake-listen-interrupted-by-music")
-            heartbeat("deepgram", {"state": "wake-listen-suspended"})
-            time.sleep(0.2)
-            continue
-        ended = mark_operation_end(listen_token, {"has_text": bool(texto_usuario)})
-        if ended:
-            _debug_emit("B", "wake-listen-finished", ended)
-        heartbeat("deepgram", {"state": "wake-listen-end", "has_text": bool(texto_usuario)})
+        texto_usuario = micro.escuchar()
         _debug_emit("B", "wake-listen-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
         # Nueva conversación. Reconstruimos la config cada vez para que los recuerdos añadidos
@@ -1280,12 +1166,7 @@ try:
             if not texto_usuario or texto_usuario.strip() == "":
                 print("☁️  No he entendido nada.")
                 _debug_emit("B", "empty-user-text")
-                try:
-                    texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
-                except micro.MicrofonoSuspendido:
-                    _debug_emit("B", "followup-empty-interrupted-by-music")
-                    en_conversacion = False
-                    continue
+                texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
                 if not texto_usuario:
                     _debug_emit("B", "followup-timeout-after-empty")
                     en_conversacion = False
@@ -1309,17 +1190,11 @@ try:
             luces.cambiar_estado("pensando")
             print("🤖 Cuántico está procesando...")
             _debug_emit("C", "assistant-processing", {"text_preview": texto_usuario[:120]})
-            chat_token = mark_operation_start("openrouter-chat", {"text_preview": texto_usuario[:120]})
-            heartbeat("openrouter", {"state": "request-start", "text_preview": texto_usuario[:120]})
             try:
                 # El adaptador de OpenRouter resuelve las tool-calls locales y la búsqueda
                 # web antes de devolver el texto final. Sin streaming aquí para que el TTS
                 # no se solape con tool-calls intermedias.
                 response = chat.send_message(texto_usuario)
-                chat_done = mark_operation_end(chat_token, {"ok": True, "has_text": bool((response.text or "").strip())})
-                if chat_done:
-                    _debug_emit("C", "assistant-processing-finished", chat_done)
-                heartbeat("openrouter", {"state": "request-end", "has_text": bool((response.text or "").strip())})
                 texto_respuesta = (response.text or "").strip()
                 silenciar_tts_musica = _tomar_silencio_tts_musica()
                 comentario_musica = _tomar_comentario_musica()
@@ -1366,28 +1241,12 @@ try:
                     continue
 
             except Exception as e:
-                chat_done = mark_operation_end(chat_token, {"ok": False, "error": str(e)})
-                if chat_done:
-                    _debug_emit("C", "assistant-processing-finished", chat_done)
-                heartbeat("openrouter", {"state": "request-error", "error": str(e)})
                 print(f"⚠️ Error en OpenRouter: {e}")
                 _debug_emit("C", "conversation-exception", {"error": str(e), "traceback": traceback.format_exc()})
                 _hablar(f"Se me ha frito una neurona, {USER_SHORT_NAME}. Repite eso.", "enfadado")
 
             # Seguimos escuchando sin wake word
-            followup_token = mark_operation_start("deepgram-listen", {"mode": "followup", "timeout_ms": 8000})
-            heartbeat("deepgram", {"state": "followup-listen-start", "timeout_ms": 8000})
-            try:
-                texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
-            except micro.MicrofonoSuspendido:
-                _debug_emit("B", "followup-interrupted-by-music")
-                heartbeat("deepgram", {"state": "followup-listen-suspended"})
-                en_conversacion = False
-                continue
-            ended = mark_operation_end(followup_token, {"has_text": bool(texto_usuario)})
-            if ended:
-                _debug_emit("B", "followup-listen-finished", ended)
-            heartbeat("deepgram", {"state": "followup-listen-end", "has_text": bool(texto_usuario)})
+            texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
             _debug_emit("B", "followup-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
 except KeyboardInterrupt:

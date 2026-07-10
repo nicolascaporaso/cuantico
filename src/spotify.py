@@ -135,26 +135,6 @@ def resumen_estado() -> dict:
     }
 
 
-def estado_reproduccion() -> dict:
-    estado = _estado_playback()
-    if not isinstance(estado, dict):
-        return {"backend": "spotify", "active": False, "paused": False, "reason": "no-playback"}
-    activo = bool(estado.get("is_playing"))
-    dispositivo = estado.get("device") or {}
-    return {
-        "backend": "spotify",
-        "active": activo,
-        "paused": not activo,
-        "reason": "playing" if activo else "paused-or-idle",
-        "device_name": dispositivo.get("name"),
-        "device_is_active": dispositivo.get("is_active"),
-    }
-
-
-def esta_reproduciendo() -> bool:
-    return bool(estado_reproduccion().get("active"))
-
-
 def reproducir(query=None):
     ok, motivo = disponible_para_reproducir()
     if not ok:

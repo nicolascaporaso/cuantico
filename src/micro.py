@@ -7,7 +7,6 @@ import time
 import wave
 import json
 import urllib.request
-import threading
 from pathlib import Path
 from openwakeword.model import Model
 import luces
@@ -30,10 +29,6 @@ _stream = None
 _oww = None
 _vad = None
 _capture_rate = SAMPLE_RATE   # sample rate real del hardware (puede ser 48000 si el device no soporta 16k)
-_input_device_index = None
-_micro_suspended = False
-_suspend_reason = ""
-_io_lock = threading.Lock()
 
 GANANCIA_MIC = 8.0  # ajustable: probar 3.0 / 4.0 / 6.0 / 8.0 según qué tan bajo capture el HW
 
@@ -83,10 +78,6 @@ def _debug_emit(msg: str, data: dict | None = None):
     except Exception:
         pass
 # #endregion
-
-
-class MicrofonoSuspendido(RuntimeError):
-    pass
 
 
 def _amplificar(audio_bytes, factor=GANANCIA_MIC):
@@ -148,37 +139,10 @@ def _abrir_stream(idx):
     raise RuntimeError("Ningún sample rate funciona con este micro")
 
 
-def _cerrar_stream():
-    global _stream
-    if _stream:
-        try:
-            _stream.stop_stream()
-        except Exception:
-            pass
-        try:
-            _stream.close()
-        except Exception:
-            pass
-        _stream = None
-
-
-def _asegurar_audio_activo():
-    global _pa, _stream, _input_device_index
-    if _pa is None:
-        _pa = pyaudio.PyAudio()
-    if _input_device_index is None:
-        _input_device_index = _encontrar_dispositivo()
-    if _stream is None:
-        _stream = _abrir_stream(_input_device_index)
-
-
 def _leer_raw(samples_16k):
     """Devuelve bytes PCM16 equivalentes a `samples_16k` muestras a 16 kHz, haciendo decimación si el HW captura a mayor rate."""
-    with _io_lock:
-        if _micro_suspended or _stream is None:
-            raise MicrofonoSuspendido(_suspend_reason or "microphone-suspended")
-        factor = _capture_rate // SAMPLE_RATE
-        raw = _stream.read(samples_16k * factor, exception_on_overflow=False)
+    factor = _capture_rate // SAMPLE_RATE
+    raw = _stream.read(samples_16k * factor, exception_on_overflow=False)
     if factor == 1:
         return _amplificar(raw)
     audio = np.frombuffer(raw, dtype=np.int16)[::factor]
@@ -186,49 +150,15 @@ def _leer_raw(samples_16k):
 
 
 def inicializar():
-    global _pa, _stream, _oww, _vad, _input_device_index, _micro_suspended, _suspend_reason
+    global _pa, _stream, _oww, _vad
     print("🦻 Cargando openWakeWord...")
     _debug_emit("micro-init-start", {"wake_model": WAKE_MODEL})
     _oww = Model(wakeword_models=[WAKE_MODEL], inference_framework="onnx")
     _vad = webrtcvad.Vad(2)
     _pa = pyaudio.PyAudio()
-    _input_device_index = _encontrar_dispositivo()
-    with _io_lock:
-        _stream = _abrir_stream(_input_device_index)
-    _micro_suspended = False
-    _suspend_reason = ""
+    _stream = _abrir_stream(_encontrar_dispositivo())
     print("✅ Micro en modo radar: escuchando wake word.")
     _debug_emit("micro-init-end")
-
-
-def esta_suspendido() -> bool:
-    return _micro_suspended
-
-
-def suspender(reason: str = "music-playback") -> dict:
-    global _micro_suspended, _suspend_reason
-    already_suspended = _micro_suspended
-    _micro_suspended = True
-    _suspend_reason = reason
-    with _io_lock:
-        _cerrar_stream()
-    estado = {"suspended": True, "already_suspended": already_suspended, "reason": reason}
-    _debug_emit("micro-suspended", estado)
-    return estado
-
-
-def reanudar() -> dict:
-    global _micro_suspended, _suspend_reason
-    reopened = False
-    with _io_lock:
-        if _stream is None:
-            _asegurar_audio_activo()
-            reopened = True
-    _micro_suspended = False
-    _suspend_reason = ""
-    estado = {"suspended": False, "stream_reopened": reopened}
-    _debug_emit("micro-resumed", estado)
-    return estado
 
 
 def _esperar_wake():
@@ -322,48 +252,43 @@ def escuchar():
     """Espera wake word, graba y transcribe. Usar al inicio de cada conversación."""
     print("💤 En reposo. Di la wake word para despertarme...")
     _debug_emit("listen-radar-start")
-    try:
-        _esperar_wake()
-        print("🎤 [Wake] ¡Despierto! Escuchando tu petición...")
-        wav = _grabar_desde()
-        print("🧠 [Deepgram] Analizando...")
-        _debug_emit("listen-radar-audio-ready", {"wav_path": wav})
-        return _transcribir_deepgram(wav)
-    except MicrofonoSuspendido:
-        _debug_emit("listen-radar-suspended", {"reason": _suspend_reason or "music-playback"})
-        raise
+    _esperar_wake()
+    print("🎤 [Wake] ¡Despierto! Escuchando tu petición...")
+    wav = _grabar_desde()
+    print("🧠 [Deepgram] Analizando...")
+    _debug_emit("listen-radar-audio-ready", {"wav_path": wav})
+    return _transcribir_deepgram(wav)
 
 
 def escuchar_seguimiento(timeout_ms=8000):
     """Escucha sin wake word, con timeout. Devuelve None si no se detecta voz en `timeout_ms`."""
     print(f"👂 ¿Algo más? ({timeout_ms//1000}s)...")
     luces.cambiar_estado("escuchando")
-    try:
-        frame = _esperar_voz(timeout_ms)
-        if frame is None:
-            print("⌛ Silencio. Volviendo al modo radar.")
-            _debug_emit("followup-timeout", {"timeout_ms": timeout_ms})
-            return None
-        print("🎤 Voz captada, grabando...")
-        wav = _grabar_desde(frame)
-        print("🧠 [Deepgram] Analizando...")
-        _debug_emit("followup-audio-ready", {"wav_path": wav, "timeout_ms": timeout_ms})
-        return _transcribir_deepgram(wav)
-    except MicrofonoSuspendido:
-        _debug_emit("followup-suspended", {"timeout_ms": timeout_ms, "reason": _suspend_reason or "music-playback"})
-        raise
+    frame = _esperar_voz(timeout_ms)
+    if frame is None:
+        print("⌛ Silencio. Volviendo al modo radar.")
+        _debug_emit("followup-timeout", {"timeout_ms": timeout_ms})
+        return None
+    print("🎤 Voz captada, grabando...")
+    wav = _grabar_desde(frame)
+    print("🧠 [Deepgram] Analizando...")
+    _debug_emit("followup-audio-ready", {"wav_path": wav, "timeout_ms": timeout_ms})
+    return _transcribir_deepgram(wav)
 
 
 def cerrar():
-    global _stream, _pa, _micro_suspended, _suspend_reason
-    with _io_lock:
-        _cerrar_stream()
+    global _stream, _pa
+    if _stream:
+        try:
+            _stream.stop_stream()
+            _stream.close()
+        except Exception:
+            pass
+        _stream = None
     if _pa:
         try:
             _pa.terminate()
         except Exception:
             pass
         _pa = None
-    _micro_suspended = True
-    _suspend_reason = "closed"
     _debug_emit("micro-closed")

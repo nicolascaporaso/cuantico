@@ -10,19 +10,15 @@ from pathlib import Path
 
 import altavoz
 import config
-from runtime_debug import dump_threads, heartbeat, mark_operation_end, mark_operation_start
 
 
 _DEBUG_ENV_PATH = Path(__file__).resolve().parent.parent / ".dbg" / "unexpected-process-exit.env"
 _DEBUG_LOG_PATH = Path(config.STATE_DIR) / "unexpected-process-exit.log"
 _LOCAL_MPV_STDERR_PATH = Path(config.STATE_DIR) / "mpv-local.log"
-
 _mpv_process = None
 _mpv_route = None
 _socket_path = config.MPV_IPC_SOCKET_PATH
 
-
-# ---------------- DEBUG ----------------
 
 def _debug_emit(msg: str, data: dict | None = None):
     payload = {
@@ -35,391 +31,526 @@ def _debug_emit(msg: str, data: dict | None = None):
         "ts": int(time.time() * 1000),
     }
     line = json.dumps(payload, ensure_ascii=False)
-
     try:
         print(line, flush=True)
     except Exception:
         pass
-
     try:
         with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
         pass
-
     try:
         debug_url = "http://127.0.0.1:7777/event"
         if _DEBUG_ENV_PATH.exists():
-            for l in _DEBUG_ENV_PATH.read_text(encoding="utf-8").splitlines():
-                if l.startswith("DEBUG_SERVER_URL="):
-                    debug_url = l.split("=", 1)[1].strip()
-
+            for env_line in _DEBUG_ENV_PATH.read_text(encoding="utf-8").splitlines():
+                if env_line.startswith("DEBUG_SERVER_URL="):
+                    debug_url = env_line.split("=", 1)[1].strip()
         req = urllib.request.Request(
             debug_url,
             data=line.encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        urllib.request.urlopen(req, timeout=0.5).read()
+        urllib.request.urlopen(req, timeout=0.8).read()
     except Exception:
         pass
 
 
-# ---------------- UTILS ----------------
-
-def _command_exists(cmd: str) -> bool:
-    return shutil.which(cmd) is not None
+def _command_exists(command: str) -> bool:
+    return shutil.which(command) is not None
 
 
-def disponible_para_reproducir():
+def disponible_para_reproducir() -> tuple[bool, str]:
     if not _command_exists(config.YT_DLP_COMMAND):
-        return False, "falta yt-dlp"
+        return False, f"no encuentro {config.YT_DLP_COMMAND}; instala yt-dlp"
     if not _command_exists(config.MPV_COMMAND):
-        return False, "falta mpv"
+        return False, f"no encuentro {config.MPV_COMMAND}; instala mpv"
     return True, "ok"
 
 
-def _mpv_alive():
-    return _mpv_process is not None and _mpv_process.poll() is None
+def resumen_estado() -> dict:
+    return {
+        "yt_dlp_available": _command_exists(config.YT_DLP_COMMAND),
+        "mpv_available": _command_exists(config.MPV_COMMAND),
+        "mpv_running": _mpv_alive(),
+        "socket_path": _socket_path,
+    }
 
 
-def _ensure_socket_path() -> str:
-    global _socket_path
-    if not _socket_path:
-        _socket_path = config.MPV_IPC_SOCKET_PATH
-    return _socket_path
-
-
-def _cleanup_socket():
-    socket_path = _ensure_socket_path()
-    if socket_path and os.path.exists(socket_path):
+def inicializar():
+    if _socket_path and os.path.exists(_socket_path):
         try:
-            os.unlink(socket_path)
-            _debug_emit("mpv-ipc-cleanup", {"socket_path": socket_path, "removed": True})
-        except Exception as e:
-            _debug_emit("mpv-ipc-cleanup-failed", {"socket_path": socket_path, "error": str(e)})
+            os.unlink(_socket_path)
+        except OSError:
+            pass
+
+
+def _mpv_alive() -> bool:
+    return _mpv_process is not None and _mpv_process.poll() is None
 
 
 def _cleanup_route():
     global _mpv_route
     if _mpv_route:
-        try:
-            altavoz.desactivar_salida_audio(_mpv_route)
-        except Exception as e:
-            _debug_emit("mpv-route-cleanup-failed", {"error": str(e)})
+        altavoz.desactivar_salida_audio(_mpv_route)
     _mpv_route = None
 
 
-def inicializar():
-    _ensure_socket_path()
-    _cleanup_socket()
+def _maybe_cleanup_dead_process():
+    global _mpv_process
+    if _mpv_process and _mpv_process.poll() is not None:
+        _debug_emit("mpv-process-ended", {"returncode": _mpv_process.returncode})
+        _mpv_process = None
+        _cleanup_route()
+        if _socket_path and os.path.exists(_socket_path):
+            try:
+                os.unlink(_socket_path)
+            except OSError:
+                pass
 
 
-# ---------------- YT-DLP OPTIMIZADO (FIX CLAVE) ----------------
+def _watch_process(proc: subprocess.Popen):
+    proc.wait()
+    global _mpv_process
+    if _mpv_process is proc:
+        _debug_emit("mpv-process-watch-end", {"returncode": proc.returncode})
+        _mpv_process = None
+        _cleanup_route()
+        if _socket_path and os.path.exists(_socket_path):
+            try:
+                os.unlink(_socket_path)
+            except OSError:
+                pass
 
-def _run_yt_dlp(args, timeout_s=30):
-    proc = subprocess.run(
-        [config.YT_DLP_COMMAND, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_s,
-        check=False,
+
+def _run_yt_dlp(args: list[str]) -> str:
+    try:
+        proc = subprocess.run(
+            [config.YT_DLP_COMMAND, *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=45,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(f"yt-dlp no está instalado ({config.YT_DLP_COMMAND})") from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("yt-dlp tardó demasiado en responder") from e
+
+    salida = (proc.stdout or "").strip()
+    error = (proc.stderr or "").strip()
+    _debug_emit(
+        "yt-dlp-run",
+        {
+            "args": args,
+            "returncode": proc.returncode,
+            "stdout_preview": salida[:200],
+            "stderr_preview": error[:200],
+        },
     )
-
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr or "yt-dlp error")
+        raise RuntimeError(error or salida or "yt-dlp devolvió error")
+    return salida
 
-    return proc.stdout.strip()
+
+def _leer_log_local_mpv(max_chars: int = 1200) -> str:
+    try:
+        if not _LOCAL_MPV_STDERR_PATH.exists():
+            return ""
+        data = _LOCAL_MPV_STDERR_PATH.read_text(encoding="utf-8", errors="replace")
+        return data[-max_chars:].strip()
+    except Exception:
+        return ""
 
 
-def _buscar_videos(query: str, limit: int):
-    if query.startswith("http"):
+def _limpiar_url(url: str) -> str:
+    return (url or "").strip().strip("`").strip()
+
+
+def _buscar_videos(query: str, limit: int) -> list[dict]:
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("faltó la búsqueda de música")
+
+    if query.startswith(("http://", "https://")):
         return [{"title": query, "webpage_url": query}]
 
-    raw = _run_yt_dlp([
-        "--dump-json",
-        "--flat-playlist",
-        f"ytsearch{limit}:{query}"
-    ], timeout_s=20)
-
-    results = []
-    for line in raw.splitlines():
-        try:
-            data = json.loads(line)
-            vid = data.get("url") or data.get("id")
-            if not vid:
-                continue
-
-            if not vid.startswith("http"):
-                vid = f"https://www.youtube.com/watch?v={vid}"
-
-            results.append({
-                "title": data.get("title") or vid,
-                "webpage_url": vid
-            })
-        except Exception:
+    limit = max(1, int(limit))
+    fetch_limit = max(limit * 5, 8)
+    target = f"ytsearch{fetch_limit}:{query}"
+    data = json.loads(_run_yt_dlp(["--dump-single-json", "--flat-playlist", "--no-warnings", target]))
+    entries = data.get("entries") or []
+    resultados = []
+    for entry in entries:
+        if not entry:
             continue
+        url = _limpiar_url(entry.get("url") or entry.get("webpage_url") or "")
+        if url and not url.startswith("http"):
+            url = f"https://www.youtube.com/watch?v={url}"
+        if not url:
+            continue
+        lower_url = url.lower()
+        es_video = "watch?v=" in lower_url or "youtu.be/" in lower_url
+        if not es_video:
+            _debug_emit(
+                "yt-search-skip-non-video",
+                {
+                    "title": entry.get("title") or url,
+                    "url": url,
+                    "entry_type": entry.get("_type"),
+                },
+            )
+            continue
+        resultados.append({
+            "title": (entry.get("title") or url).strip(),
+            "webpage_url": url,
+        })
+        if len(resultados) >= limit:
+            break
+    return resultados
 
-    return results
 
-
-# ---------------- AUDIO RESOLVER (FIX IMPORTANTE) ----------------
-
-def _resolver_audio(video_url: str):
-    """
-    FIX PRINCIPAL:
-    dejamos de inspeccionar formatos uno por uno.
-    yt-dlp ya sabe elegir mejor audio.
-    """
-    try:
-        url = _run_yt_dlp([
-            "-f", "bestaudio/best",
-            "-g",
-            video_url
-        ], timeout_s=20)
-
-        return url.strip() if url else None
-    except Exception as e:
-        _debug_emit("audio-resolve-failed", {"error": str(e)})
-        return None
-
-
-def _preparar_item(result):
-    url = _resolver_audio(result["webpage_url"])
+def _resolver_audio_url(video_url: str) -> str:
+    salida = _run_yt_dlp(["--no-playlist", "-f", "bestaudio/best", "-g", video_url])
+    url = next((_limpiar_url(line) for line in salida.splitlines() if line.strip()), "")
     if not url:
-        return None
+        raise RuntimeError("yt-dlp no devolvió una URL de audio reproducible")
+    return url
 
+
+def _preparar_item_rapido(result: dict) -> dict:
+    webpage_url = _limpiar_url(result.get("webpage_url") or "")
+    if not webpage_url:
+        raise RuntimeError("faltó la URL del video de YouTube")
     return {
-        "title": result["title"],
-        "webpage_url": result["webpage_url"],
-        "stream_url": url
+        "title": (result.get("title") or webpage_url).strip(),
+        "webpage_url": webpage_url,
+        "stream_url": _resolver_audio_url(webpage_url),
     }
 
 
-# ---------------- MPV ----------------
+def _esperar_socket_mpv(timeout_seg: float = 8.0, poll_seg: float = 0.05) -> bool:
+    inicio = time.time()
+    while time.time() - inicio < timeout_seg:
+        if _mpv_process and _mpv_process.poll() is not None:
+            _debug_emit("mpv-socket-wait-process-exited", {"returncode": _mpv_process.returncode})
+            return False
+        if _socket_path and os.path.exists(_socket_path):
+            return True
+        time.sleep(poll_seg)
+    return False
 
-def _iniciar_mpv(items):
+
+def _asegurar_socket(timeout_seg: float = 8.0) -> bool:
+    return _esperar_socket_mpv(timeout_seg=timeout_seg)
+
+
+def _iniciar_mpv(items: list[dict]):
     global _mpv_process, _mpv_route
-
+    _maybe_cleanup_dead_process()
     if _mpv_alive():
         detener()
 
+    ok, motivo = disponible_para_reproducir()
+    if not ok:
+        raise RuntimeError(motivo)
+
+    if _socket_path and os.path.exists(_socket_path):
+        try:
+            os.unlink(_socket_path)
+        except OSError:
+            pass
+
     salida = altavoz.resolver_salida_audio()
-    socket_path = _ensure_socket_path()
+    activar_local_despues = salida.get("kind") == "alsa_local" and salida.get("needs_gpio")
+    stderr_target = subprocess.DEVNULL
+    stderr_handle = None
+    if activar_local_despues:
+        try:
+            _LOCAL_MPV_STDERR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            stderr_handle = open(_LOCAL_MPV_STDERR_PATH, "w", encoding="utf-8", errors="replace")
+            stderr_target = stderr_handle
+        except Exception as e:
+            _debug_emit("mpv-local-log-open-failed", {"error": str(e), "path": str(_LOCAL_MPV_STDERR_PATH)})
 
     cmd = [
         config.MPV_COMMAND,
-        "--no-video",
+        "--no-terminal",
+        "--really-quiet",
+        "--video=no",
+        "--audio-display=no",
         "--force-window=no",
         "--cache=yes",
         "--cache-secs=15",
-        "--input-ipc-server=" + socket_path,
-        *[i["stream_url"] for i in items],
+        "--ao=alsa",
+        f"--audio-device=alsa/{salida['device']}",
+        f"--input-ipc-server={_socket_path}",
+        "--network-timeout=10",
+        *[item["stream_url"] for item in items],
     ]
-
-    _mpv_process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    _debug_emit(
+        "mpv-launching",
+        {
+            "device": salida["device"],
+            "route_kind": salida["kind"],
+            "route_label": salida["label"],
+            "playlist_count": len(items),
+            "local_stderr_log": str(_LOCAL_MPV_STDERR_PATH) if activar_local_despues else "",
+        },
     )
-
-    _mpv_route = salida
-
-    altavoz.activar_salida_audio(salida)
-
-    threading.Thread(
-        target=_watch,
-        args=(_mpv_process,),
-        daemon=True
-    ).start()
-
-
-def _watch(proc):
-    global _mpv_process
-    proc.wait()
-    if _mpv_process is proc:
-        _mpv_process = None
-        _cleanup_route()
-        _cleanup_socket()
-
-
-# ---------------- API PUBLICA ----------------
-
-def preparar_reproduccion(query: str):
     try:
-        results = _buscar_videos(query, 3)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+        _mpv_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_target,
+        )
+        _debug_emit(
+            "mpv-popen-returned",
+            {
+                "pid": _mpv_process.pid,
+                "device": salida["device"],
+                "route_kind": salida["kind"],
+            },
+        )
+        _mpv_route = salida
+        socket_ready = _asegurar_socket(timeout_seg=12.0 if activar_local_despues else 8.0)
+        if not socket_ready:
+            stderr_preview = _leer_log_local_mpv()
+            if not _mpv_alive():
+                _debug_emit(
+                    "mpv-socket-timeout",
+                    {
+                        "device": salida["device"],
+                        "route_kind": salida["kind"],
+                        "error": "mpv terminó antes de abrir IPC",
+                        "stderr_preview": stderr_preview,
+                    },
+                )
+                raise RuntimeError(
+                    "mpv terminó antes de abrir su socket IPC"
+                    + (f" | stderr local: {stderr_preview[:300]}" if stderr_preview else "")
+                )
+            _debug_emit(
+                "mpv-ipc-delayed",
+                {
+                    "device": salida["device"],
+                    "route_kind": salida["kind"],
+                    "stderr_preview": stderr_preview,
+                },
+            )
+        if activar_local_despues:
+            altavoz.activar_salida_audio(salida)
+            _debug_emit(
+                "local-audio-activated-after-mpv-ready" if socket_ready else "local-audio-activated-with-delayed-ipc",
+                {"device": salida["device"], "label": salida["label"]},
+            )
+        else:
+            altavoz.activar_salida_audio(salida)
+        threading.Thread(target=_watch_process, args=(_mpv_process,), daemon=True).start()
+        _debug_emit(
+            "mpv-started",
+            {
+                "pid": _mpv_process.pid,
+                "device": salida["device"],
+                "route_kind": salida["kind"],
+                "route_label": salida["label"],
+                "playlist_count": len(items),
+                "direct_start": True,
+                "ipc_ready": socket_ready,
+            },
+        )
+    except Exception:
+        _cleanup_route()
+        _mpv_process = None
+        raise
+    finally:
+        if stderr_handle:
+            try:
+                stderr_handle.close()
+            except Exception:
+                pass
 
-    for r in results:
-        item = _preparar_item(r)
-        if item:
-            return {
-                "ok": True,
-                "prepared": {"items": [item]},
-                "title": item["title"]
-            }
 
-    return {"ok": False, "error": "no audio found"}
+def _ipc_command(command: list, *, retries: int = 8, retry_delay_seg: float = 0.12):
+    _maybe_cleanup_dead_process()
+    if not _mpv_alive():
+        raise RuntimeError("mpv no está corriendo")
+
+    payload = json.dumps({"command": command}, ensure_ascii=False).encode("utf-8") + b"\n"
+    last_error = None
+    for intento in range(retries):
+        try:
+            if not _esperar_socket_mpv(timeout_seg=2.5, poll_seg=0.05):
+                raise RuntimeError("socket IPC de mpv todavía no existe")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(3)
+                sock.connect(_socket_path)
+                sock.sendall(payload)
+                data = sock.recv(65536)
+            break
+        except (FileNotFoundError, ConnectionRefusedError, OSError, RuntimeError) as e:
+            last_error = e
+            _debug_emit(
+                "mpv-ipc-retry",
+                {
+                    "command": command,
+                    "attempt": intento + 1,
+                    "retries": retries,
+                    "error": str(e),
+                },
+            )
+            _maybe_cleanup_dead_process()
+            if not _mpv_alive():
+                raise RuntimeError("mpv terminó antes de aceptar comandos IPC") from e
+            if intento >= retries - 1:
+                raise RuntimeError(f"mpv IPC no respondió tras {retries} intentos: {e}") from e
+            time.sleep(retry_delay_seg)
+    else:
+        raise RuntimeError(f"mpv IPC no respondió: {last_error}")
+
+    response = json.loads(data.decode("utf-8", errors="replace") or "{}")
+    if response.get("error") not in (None, "success"):
+        raise RuntimeError(f"mpv IPC error: {response.get('error')}")
+    _debug_emit("mpv-ipc", {"command": command, "response": response})
+    return response.get("data")
 
 
-def ejecutar_preparado(prepared):
-    _iniciar_mpv(prepared["items"])
+def _cargar_playlist(items: list[dict]) -> bool:
+    if not items:
+        return False
+    _iniciar_mpv(items)
+    _debug_emit(
+        "playlist-loaded",
+        {
+            "count": len(items),
+            "first_title": items[0]["title"],
+            "direct_start": True,
+        },
+    )
     return True
 
 
-def reproducir(query: str):
-    info = preparar_reproduccion(query)
-    if not info["ok"]:
-        print("error:", info["error"])
-        return False
+def preparar_reproduccion(query: str) -> dict:
+    resultados = _buscar_videos(query, 1)
+    if not resultados:
+        return {"ok": False, "error": f"No encontré nada en YouTube para '{query}'"}
+    try:
+        item = _preparar_item_rapido(resultados[0])
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    _debug_emit("prepared-track", {"title": item["title"], "direct_start": True})
+    return {"ok": True, "prepared": {"items": [item]}, "commentary": "", "title": item["title"]}
 
+
+def preparar_playlist(query: str) -> dict:
+    resultados = _buscar_videos(query, config.YOUTUBE_PLAYLIST_SEARCH_LIMIT)
+    if not resultados:
+        return {"ok": False, "error": f"No encontré resultados en YouTube para '{query}'"}
+    playlist = []
+    for result in resultados:
+        try:
+            item = _preparar_item_rapido(result)
+        except Exception as e:
+            _debug_emit("prepare-playlist-item-failed", {"title": result.get("title"), "error": str(e)})
+            continue
+        playlist.append(item)
+        if len(playlist) >= config.YOUTUBE_AUDIO_SEARCH_LIMIT:
+            break
+    if not playlist:
+        return {"ok": False, "error": f"No pude extraer audio reproducible para '{query}'"}
+    return {"ok": True, "prepared": {"items": playlist}, "commentary": "", "title": playlist[0]["title"]}
+
+
+def ejecutar_preparado(prepared: dict) -> bool:
+    items = list(prepared.get("items") or [])
+    return _cargar_playlist(items)
+
+
+def reproducir(query: str | None = None) -> bool:
+    if not query:
+        return reanudar()
+    info = preparar_reproduccion(query)
+    if not info.get("ok"):
+        print(f"   ⚠️ {info.get('error', 'No pude preparar la reproducción')}")
+        return False
+    print(f"   ▶️ YouTube: {info['title']}")
     return ejecutar_preparado(info["prepared"])
 
 
-# ---------------- CONTROL BASICO ----------------
+def reproducir_playlist(query: str) -> bool:
+    info = preparar_playlist(query)
+    if not info.get("ok"):
+        print(f"   ⚠️ {info.get('error', 'No pude preparar la playlist')}")
+        return False
+    playlist = info["prepared"]["items"]
+    print(f"   ▶️ YouTube playlist: {playlist[0]['title']} (+{len(playlist) - 1} más)")
+    return ejecutar_preparado(info["prepared"])
 
-def reanudar():
+
+def reanudar() -> bool:
+    _maybe_cleanup_dead_process()
     if not _mpv_alive():
         return False
-    _ipc_call(["set_property", "pause", False])
+    _ipc_command(["set_property", "pause", False])
     return True
 
 
-def pausar():
+def pausar() -> bool:
+    _maybe_cleanup_dead_process()
     if not _mpv_alive():
         return False
-    _ipc_call(["set_property", "pause", True])
+    _ipc_command(["set_property", "pause", True])
     return True
 
 
-def siguiente():
+def siguiente() -> bool:
+    _maybe_cleanup_dead_process()
     if not _mpv_alive():
         return False
-    _ipc_call(["playlist-next", "force"])
+    _ipc_command(["playlist-next", "force"])
     return True
 
 
-def anterior():
+def anterior() -> bool:
+    _maybe_cleanup_dead_process()
     if not _mpv_alive():
         return False
-    _ipc_call(["playlist-prev", "force"])
+    _ipc_command(["playlist-prev", "force"])
     return True
 
 
-def volumen(delta: int):
+def volumen(delta: int) -> bool:
+    _maybe_cleanup_dead_process()
     if not _mpv_alive():
         return False
-
-    vol = _ipc_call(["get_property", "volume"])
-    actual = int(float(vol if vol is not None else 50))
-    new = max(0, min(100, actual + delta))
-
-    _ipc_call(["set_property", "volume", new])
+    actual = _ipc_command(["get_property", "volume"])
+    if actual is None:
+        actual = 50
+    nuevo = int(max(0, min(100, int(actual) + int(delta))))
+    _ipc_command(["set_property", "volume", nuevo])
+    print(f"   🔉 Volumen YouTube/mpv: {int(actual)}% → {nuevo}%")
     return True
 
 
-def estado_reproduccion() -> dict:
-    if not _mpv_alive():
-        return {"backend": "youtube", "active": False, "paused": False, "reason": "process-not-running"}
-    try:
-        paused = bool(_ipc_call(["get_property", "pause"]))
-        idle_active = bool(_ipc_call(["get_property", "idle-active"]))
-        active = not paused and not idle_active
-        return {
-            "backend": "youtube",
-            "active": active,
-            "paused": paused,
-            "idle_active": idle_active,
-            "reason": "playing" if active else ("paused" if paused else "idle"),
-        }
-    except Exception as e:
-        return {
-            "backend": "youtube",
-            "active": True,
-            "paused": False,
-            "reason": "ipc-unavailable",
-            "error": str(e),
-        }
-
-
-def esta_reproduciendo() -> bool:
-    return bool(estado_reproduccion().get("active"))
-
-
-# ---------------- IPC ----------------
-
-def _ipc(cmd):
-    payload = json.dumps({"command": cmd}).encode()
-    socket_path = _ensure_socket_path()
-
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.connect(socket_path)
-        s.sendall(payload + b"\n")
-        return s.recv(4096)
-
-
-def _ipc_call(cmd):
-    raw = _ipc(cmd)
-    try:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
-    except Exception:
-        return None
-    return data.get("data")
-
-
-# ---------------- FIX CRÍTICO (ESTO TE ROMPIA TODO) ----------------
-
-def detener():
-    """Detiene reproducción de mpv de forma segura y limpia"""
+def detener() -> bool:
     global _mpv_process
-
-    # 1. Si no hay proceso vivo, salir rápido
-    if _mpv_process is None:
-        _cleanup_route()
-        _cleanup_socket()
+    _maybe_cleanup_dead_process()
+    if not _mpv_alive():
         return False
-
     try:
-        # 2. Intento limpio vía IPC
-        _ipc(["quit"])
+        _ipc_command(["quit"])
     except Exception:
-        pass
-
-    try:
-        # 3. Asegurar terminación del proceso
-        if _mpv_process.poll() is None:
+        try:
             _mpv_process.terminate()
-
-            try:
-                _mpv_process.wait(timeout=2)
-            except Exception:
-                _mpv_process.kill()
-    except Exception:
-        pass
-
+        except Exception:
+            pass
     _mpv_process = None
     _cleanup_route()
-    _cleanup_socket()
-
+    if _socket_path and os.path.exists(_socket_path):
+        try:
+            os.unlink(_socket_path)
+        except OSError:
+            pass
     return True
-
-
-def limpiar_recursos(detener_reproduccion: bool = False) -> dict:
-    stopped = False
-    if detener_reproduccion:
-        stopped = detener()
-    else:
-        if not _mpv_alive():
-            _cleanup_route()
-            _cleanup_socket()
-    estado = {
-        "stopped": stopped,
-        "mpv_alive": _mpv_alive(),
-        "socket_path": _ensure_socket_path(),
-        "socket_exists": bool(_ensure_socket_path() and os.path.exists(_ensure_socket_path())),
-    }
-    _debug_emit("music-cleanup", estado)
-    heartbeat("mpv", {"state": "cleanup", **estado})
-    return estado
