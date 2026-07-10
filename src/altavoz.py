@@ -8,9 +8,10 @@ import RPi.GPIO as GPIO
 import luces
 import config
 import bluetooth_audio
+import cuantico_profiles as profile
 
 ELEVENLABS_API_KEY = config.ELEVENLABS_API_KEY
-VOICE_ID = config.ELEVENLABS_VOICE_ID
+_DEFAULT_VOICE_ID = config.ELEVENLABS_VOICE_ID
 TTS_MODEL = "eleven_turbo_v2_5"  # ~250ms TTFB, calidad cercana al multilingual
 STARTUP_WAV_PATH = Path(__file__).resolve().parent.parent / "test.wav"
 # Pon esto a False si en el futuro quieres desactivar el WAV de arranque.
@@ -175,7 +176,11 @@ def _lanzar_mpg123():
 
 def _tts_a_tuberia(texto, stdin):
     """Pide audio a ElevenLabs (streaming) y escribe bytes directos a mpg123."""
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}/stream?output_format=mp3_22050_32"
+    voice_id = profile.get_tts_voice_id() or _DEFAULT_VOICE_ID
+    model_id = profile.get_tts_model_id() or TTS_MODEL
+    language_code = profile.get_tts_language_code() or "es"
+    voice_settings = profile.get_tts_voice_settings() or {"stability": 0.5, "similarity_boost": 0.75}
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream?output_format=mp3_22050_32"
     headers = {
         "Accept": "audio/mpeg",
         "Content-Type": "application/json",
@@ -183,12 +188,12 @@ def _tts_a_tuberia(texto, stdin):
     }
     data = {
         "text": texto,
-        "model_id": TTS_MODEL,
-        "language_code": "es",
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+        "model_id": model_id,
+        "language_code": language_code,
+        "voice_settings": voice_settings,
     }
     r = requests.post(url, json=data, headers=headers, stream=True)
-    _debug_emit("elevenlabs-response", {"status": r.status_code, "text_len": len(texto), "voice_id": VOICE_ID})
+    _debug_emit("elevenlabs-response", {"status": r.status_code, "text_len": len(texto), "voice_id": voice_id, "profile": profile.get_active_profile_name()})
     if r.status_code != 200:
         print(f"⚠️ ElevenLabs {r.status_code}: {r.text[:120]}")
         return

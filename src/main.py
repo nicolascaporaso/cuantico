@@ -30,6 +30,7 @@ USER_SHORT_NAME = config.USER_SHORT_NAME
 USER_FULL_NAME = config.USER_FULL_NAME
 ACTIVE_PROFILE_NAME = profile.get_active_profile_name()
 _accion_sistema_pendiente: str | None = None
+_force_new_conversation = False
 
 
 class _RestartRequested(Exception):
@@ -733,6 +734,48 @@ def backend_musica_actual() -> str:
     return music_router.resumen_backend_actual()
 
 
+def cambiar_personalidad(modo: str) -> str:
+    """Cambia la personalidad activa de Cuántico (prompt + voz + emociones + luces). Úsala cuando nico diga 'cuantico modo argentino', 'cuantico modo malevo', 'cuantico modo zorra', 'cambiá tu personalidad' o 'cambia de modo'.
+
+    Args:
+        modo: Nombre del modo/persona. Puede incluir la palabra 'modo'.
+    """
+    global ACTIVE_PROFILE_NAME, _force_new_conversation
+    texto = (modo or "").strip().lower()
+    for pref in ("cuantico", "cuántico"):
+        if texto.startswith(pref):
+            texto = texto[len(pref):].strip()
+    if texto.startswith("modo "):
+        texto = texto[5:].strip()
+    if not texto:
+        return "fallo: decime qué modo querés"
+    alias = {
+        "argentino": "argentino",
+        "argento": "argentino",
+        "espanol": "espanol",
+        "español": "espanol",
+        "castizo": "espanol",
+        "malevo": "tanguero",
+        "tanguero": "tanguero",
+        "zorra": "zorra",
+        "coqueta": "zorra",
+    }
+    destino = alias.get(texto, "")
+    if not destino:
+        for nombre in profile.list_profiles():
+            if texto in nombre:
+                destino = nombre
+                break
+    if not destino:
+        return "fallo: no conozco ese modo"
+    profile.set_active_profile(destino, persist=True)
+    ACTIVE_PROFILE_NAME = profile.get_active_profile_name()
+    _reconstruir_system_prompt()
+    luces.cambiar_estado(profile.detectar_emocion("hola"))
+    _force_new_conversation = True
+    return f"ok: modo {ACTIVE_PROFILE_NAME}"
+
+
 def buscar_parlantes_bluetooth() -> str:
     """Escanea dispositivos Bluetooth cercanos y devuelve los parlantes o auriculares detectados. Úsala cuando nico pida buscar, escanear o descubrir un parlante Bluetooth cercano."""
     try:
@@ -1213,6 +1256,7 @@ TOOLS = [
     siguiente_cancion, cancion_anterior, cambiar_volumen,
     cortar_musica_en, cancelar_corte_musica,
     usar_spotify_para_musica, usar_youtube_para_musica, backend_musica_actual,
+    cambiar_personalidad,
     buscar_parlantes_bluetooth, listar_parlantes_bluetooth, conectar_parlante_bluetooth,
     desconectar_parlante_bluetooth, parlante_bluetooth_actual, usar_altavoz_integrado,
     programar_aviso, programar_recordatorio, programar_musica, programar_luces,
@@ -1248,21 +1292,30 @@ if calendario.inicializar():
 recuerdos.inicializar()
 _debug_emit("A", "recuerdos-inicializados")
 
-# Inyecta los nombres reales de las luces de casa en el system prompt
-_luces_disponibles = govee.nombres_luces()
-if _luces_disponibles:
-    SYSTEM_PROMPT += f"\n\nLUCES DE CASA DISPONIBLES: {', '.join(_luces_disponibles)}. Para controlar solo una, pasa su nombre (o una aproximación) en el parámetro `luz` de la tool correspondiente. Para controlar TODAS a la vez, deja `luz` vacío."
-_luces_wiz = wiz_controller.nombres_luces()
-if _luces_wiz:
-    SYSTEM_PROMPT += f"\n\nLUCES WIZ REGISTRADAS: {', '.join(_luces_wiz)}. Cuando nico mencione WiZ, dormitorio, velador u otras luces WiZ registradas, usa las tools específicas de WiZ."
 
-# Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
-SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am', 'a las 18:30', 'el 5 de marzo' o '5/3', usa primero la tool `programar_aviso(cuando, etiqueta)` o la tool específica de recordatorios si el usuario habla de recordar algo."
-SYSTEM_PROMPT += "\n\nMUSICA: el backend preferido puede ser Spotify o YouTube. Si nico dice explícitamente 'por spotify', 'usa spotify', 'por youtube' o 'usa youtube', usa primero la tool de selección correspondiente y luego la tool de música."
-SYSTEM_PROMPT += "\n\nCORTE DE MUSICA: si nico pide que la música dure un tiempo y se corte ('cortala en 30 minutos', 'en 1 hora apagá la música', 'a las 23:30 cortame la música'), usa `cortar_musica_en`."
-SYSTEM_PROMPT += "\n\nTAREAS PROGRAMADAS: si nico pide reproducir música en una fecha futura o de forma recurrente como todos los días a las 7 o todos los martes a las 15, usa `programar_musica`. Si pide programar luces para una fecha futura o una recurrencia como todos los días, todos los lunes o lunes y jueves a las 17, usa `programar_luces`. Si pide agendar algo con fecha natural y recordatorio por voz, usa `agendar_evento_inteligente`."
-SYSTEM_PROMPT += "\n\nSISTEMA: si nico pide apagar o reiniciar solo Cuántico, usa las tools `apagar_cuantico` o `reiniciar_cuantico`."
-SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {config.now_local().strftime('%Y-%m-%d %A %H:%M')} (zona horaria {config.CUANTICO_TIMEZONE})."
+def _reconstruir_system_prompt():
+    global SYSTEM_PROMPT, ACTIVE_PROFILE_NAME
+    ACTIVE_PROFILE_NAME = profile.get_active_profile_name()
+    SYSTEM_PROMPT = profile.render_main_prompt()
+
+    _luces_disponibles = govee.nombres_luces()
+    if _luces_disponibles:
+        SYSTEM_PROMPT += f"\n\nLUCES DE CASA DISPONIBLES: {', '.join(_luces_disponibles)}. Para controlar solo una, pasa su nombre (o una aproximación) en el parámetro `luz` de la tool correspondiente. Para controlar TODAS a la vez, deja `luz` vacío."
+    _luces_wiz = wiz_controller.nombres_luces()
+    if _luces_wiz:
+        SYSTEM_PROMPT += f"\n\nLUCES WIZ REGISTRADAS: {', '.join(_luces_wiz)}. Cuando nico mencione WiZ, dormitorio, velador u otras luces WiZ registradas, usa las tools específicas de WiZ."
+
+    disponibles = ", ".join(profile.list_profiles())
+    SYSTEM_PROMPT += f"\n\nPERSONALIDADES: disponibles {disponibles}. Para cambiar de modo usa `cambiar_personalidad(modo)`."
+    SYSTEM_PROMPT += "\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am', 'a las 18:30', 'el 5 de marzo' o '5/3', usa primero la tool `programar_aviso(cuando, etiqueta)` o la tool específica de recordatorios si el usuario habla de recordar algo."
+    SYSTEM_PROMPT += "\n\nMUSICA: el backend preferido puede ser Spotify o YouTube. Si nico dice explícitamente 'por spotify', 'usa spotify', 'por youtube' o 'usa youtube', usa primero la tool de selección correspondiente y luego la tool de música."
+    SYSTEM_PROMPT += "\n\nCORTE DE MUSICA: si nico pide que la música dure un tiempo y se corte ('cortala en 30 minutos', 'en 1 hora apagá la música', 'a las 23:30 cortame la música'), usa `cortar_musica_en`."
+    SYSTEM_PROMPT += "\n\nTAREAS PROGRAMADAS: si nico pide reproducir música en una fecha futura o de forma recurrente como todos los días a las 7 o todos los martes a las 15, usa `programar_musica`. Si pide programar luces para una fecha futura o una recurrencia como todos los días, todos los lunes o lunes y jueves a las 17, usa `programar_luces`. Si pide agendar algo con fecha natural y recordatorio por voz, usa `agendar_evento_inteligente`."
+    SYSTEM_PROMPT += "\n\nSISTEMA: si nico pide apagar o reiniciar solo Cuántico, usa las tools `apagar_cuantico` o `reiniciar_cuantico`."
+    SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {config.now_local().strftime('%Y-%m-%d %A %H:%M')} (zona horaria {config.CUANTICO_TIMEZONE})."
+
+
+_reconstruir_system_prompt()
 
 def _crear_chat_turno(system_prompt, funciones):
     """Crea una sesión de chat con function calling local y búsqueda web en OpenRouter."""
@@ -1310,6 +1363,7 @@ try:
 
         # Nueva conversación. Reconstruimos la config cada vez para que los recuerdos añadidos
         # (y nombres de luces, etc.) queden actualizados sin reiniciar el proceso.
+        _reconstruir_system_prompt()
         chat = _crear_chat_turno(_prompt_con_memoria(), TOOLS)
 
         # --- MODO CONVERSACIÓN ---
@@ -1394,6 +1448,11 @@ try:
                     continue
 
                 if _ejecutar_accion_sistema_pendiente():
+                    en_conversacion = False
+                    continue
+                if _force_new_conversation:
+                    _debug_emit("B", "conversation-reset-requested", {"profile": profile.get_active_profile_name()})
+                    _force_new_conversation = False
                     en_conversacion = False
                     continue
 
