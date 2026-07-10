@@ -469,6 +469,8 @@ def _ejecutar_accion_sistema_pendiente():
 # Lock que serializa cualquier reproducción TTS. Si Cuántico está hablando y un
 # timer vence, el thread scheduler espera aquí y suelta su mensaje al terminar.
 _tts_lock = threading.Lock()
+_MUSIC_CUT_LABEL = "__corte_musica__"
+_music_cut_task_id: str | None = None
 
 def _hablar(texto, emocion):
     """Wrapper serializado de altavoz.hablar — evita solapes entre respuestas y alarmas."""
@@ -479,6 +481,15 @@ def _hablar_stream(generador, emocion):
     """Variante streaming: ElevenLabs va sacando audio frase a frase según llegan chunks."""
     with _tts_lock:
         altavoz.hablar_stream(generador, emocion)
+
+
+def _cancelar_corte_musica_existente():
+    global _music_cut_task_id
+    if _music_cut_task_id:
+        timers.cancelar(_music_cut_task_id)
+        _music_cut_task_id = None
+    else:
+        timers.cancelar(_MUSIC_CUT_LABEL)
 
 
 def _texto_evento_programado(evento: dict) -> tuple[str, str]:
@@ -576,6 +587,17 @@ def _ejecutar_luces_programadas(evento: dict):
         _hablar(f"No pude {accion} las luces programadas {selector or 'de casa'}.", "embolado")
 
 
+def _ejecutar_corte_musica_programado(evento: dict):
+    ok = music_router.detener_todo()
+    _debug_emit("T", "scheduled-music-stop-fired", {
+        "ok": ok,
+        "payload": evento.get("payload") or {},
+        "recurrence": evento.get("recurrencia") or {},
+    })
+    if not ok:
+        _hablar("No pude cortar la música programada.", "embolado")
+
+
 def _callback_timer(evento: dict):
     """Invocado por el scheduler de timers al vencer un evento persistido."""
     _debug_emit("T", "alarm-callback-enter", {
@@ -586,6 +608,8 @@ def _callback_timer(evento: dict):
     try:
         if evento.get("tipo") == "musica":
             _ejecutar_musica_programada(evento)
+        elif evento.get("tipo") == "musica_stop":
+            _ejecutar_corte_musica_programado(evento)
         elif evento.get("tipo") == "luces":
             _ejecutar_luces_programadas(evento)
         else:
@@ -893,19 +917,67 @@ def programar_musica(
     if modo not in {"cancion", "playlist"}:
         return "fallo: el modo debe ser cancion o playlist"
     try:
-        info = timers.programar_tarea_desde_texto(
-            cuando,
-            tipo="musica",
-            etiqueta=consulta,
-            payload={"query": consulta, "backend": backend_normalizado, "mode": modo},
-            default_hour=9,
-            default_minute=0,
-            recurrencia=recurrencia,
-            dias_semana=dias_semana,
-        )
+        payload = {"query": consulta, "backend": backend_normalizado, "mode": modo}
+        cuando_limpio = (cuando or "").strip()
+        objetivo_iso = None
+        try:
+            if "T" in cuando_limpio or "t" in cuando_limpio:
+                objetivo_iso = datetime.fromisoformat(cuando_limpio.replace("Z", "+00:00"))
+        except ValueError:
+            objetivo_iso = None
+        if objetivo_iso is not None and (recurrencia or "una_vez").strip().lower() in {"", "una_vez", "una vez", "once"}:
+            info = timers.programar_tarea_para_datetime(
+                objetivo_iso,
+                tipo="musica",
+                etiqueta=consulta,
+                payload=payload,
+                recurrencia={"type": "once"},
+            )
+        else:
+            info = timers.programar_tarea_desde_texto(
+                cuando,
+                tipo="musica",
+                etiqueta=consulta,
+                payload=payload,
+                default_hour=9,
+                default_minute=0,
+                recurrencia=recurrencia,
+                dias_semana=dias_semana,
+            )
         return f"ok: música programada por {backend_normalizado} {_programacion_legible(info)}"
     except Exception as e:
         return f"fallo: no pude programar esa música ({e})"
+
+
+def cortar_musica_en(cuando: str) -> str:
+    """Programa un corte total de la música (silencio) en un momento futuro. Úsala cuando nico diga 'cortá la música en 30 minutos', 'apagá la música en 1 hora' o 'a las 23:30 cortame la música'.
+
+    Args:
+        cuando: Momento o duración en lenguaje natural. Ej: 'en 30 minutos', 'en 1 hora', 'a las 23:30'.
+    """
+    global _music_cut_task_id
+    try:
+        _cancelar_corte_musica_existente()
+        info = timers.programar_tarea_desde_texto(
+            cuando,
+            tipo="musica_stop",
+            etiqueta=_MUSIC_CUT_LABEL,
+            payload={"action": "stop_music"},
+            default_hour=23,
+            default_minute=0,
+        )
+        _music_cut_task_id = info.get("id")
+        return f"ok: corto la música {_programacion_legible(info)}"
+    except Exception as e:
+        return f"fallo: no pude programar el corte de música ({e})"
+
+
+def cancelar_corte_musica() -> str:
+    """Cancela el corte de música programado (si existe). Úsala cuando nico diga 'cancelá el corte de música' o 'no cortes la música'."""
+    global _music_cut_task_id
+    _cancelar_corte_musica_existente()
+    _music_cut_task_id = None
+    return "ok: cancelé el corte de música"
 
 
 def programar_luces(cuando: str, accion: str, luz: str = "", sistema: str = "", recurrencia: str = "una_vez", dias_semana: str = "") -> str:
@@ -958,6 +1030,8 @@ def listar_temporizadores() -> str:
             backend = (payload.get("backend") or music_router.backend_actual()).strip().lower()
             modo = (payload.get("mode") or "cancion").strip().lower()
             descripcion = f"musica {backend} ({modo}) '{etiqueta}'"
+        elif tipo == "musica_stop":
+            descripcion = "corte música"
         elif tipo == "recordatorio":
             descripcion = f"recordatorio '{payload.get('mensaje') or etiqueta}'"
         elif tipo == "luces":
@@ -1137,6 +1211,7 @@ TOOLS = [
     apagar_cuantico, reiniciar_cuantico,
     reproducir_musica, poner_playlist, reanudar_musica, pausar_musica,
     siguiente_cancion, cancion_anterior, cambiar_volumen,
+    cortar_musica_en, cancelar_corte_musica,
     usar_spotify_para_musica, usar_youtube_para_musica, backend_musica_actual,
     buscar_parlantes_bluetooth, listar_parlantes_bluetooth, conectar_parlante_bluetooth,
     desconectar_parlante_bluetooth, parlante_bluetooth_actual, usar_altavoz_integrado,
@@ -1184,6 +1259,7 @@ if _luces_wiz:
 # Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
 SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am', 'a las 18:30', 'el 5 de marzo' o '5/3', usa primero la tool `programar_aviso(cuando, etiqueta)` o la tool específica de recordatorios si el usuario habla de recordar algo."
 SYSTEM_PROMPT += "\n\nMUSICA: el backend preferido puede ser Spotify o YouTube. Si nico dice explícitamente 'por spotify', 'usa spotify', 'por youtube' o 'usa youtube', usa primero la tool de selección correspondiente y luego la tool de música."
+SYSTEM_PROMPT += "\n\nCORTE DE MUSICA: si nico pide que la música dure un tiempo y se corte ('cortala en 30 minutos', 'en 1 hora apagá la música', 'a las 23:30 cortame la música'), usa `cortar_musica_en`."
 SYSTEM_PROMPT += "\n\nTAREAS PROGRAMADAS: si nico pide reproducir música en una fecha futura o de forma recurrente como todos los días a las 7 o todos los martes a las 15, usa `programar_musica`. Si pide programar luces para una fecha futura o una recurrencia como todos los días, todos los lunes o lunes y jueves a las 17, usa `programar_luces`. Si pide agendar algo con fecha natural y recordatorio por voz, usa `agendar_evento_inteligente`."
 SYSTEM_PROMPT += "\n\nSISTEMA: si nico pide apagar o reiniciar solo Cuántico, usa las tools `apagar_cuantico` o `reiniciar_cuantico`."
 SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {config.now_local().strftime('%Y-%m-%d %A %H:%M')} (zona horaria {config.CUANTICO_TIMEZONE})."
