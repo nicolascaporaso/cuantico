@@ -152,6 +152,22 @@ def _dt_local(year: int, month: int, day: int, hour: int, minute: int) -> dateti
     return datetime(year, month, day, hour, minute, second=0, microsecond=0, tzinfo=tzinfo)
 
 
+def _parsear_iso_datetime(texto: str) -> datetime | None:
+    bruto = (texto or "").strip()
+    if not bruto:
+        return None
+    candidato = bruto.replace("Z", "+00:00")
+    if "T" not in candidato and "t" not in candidato:
+        return None
+    try:
+        objetivo = datetime.fromisoformat(candidato)
+    except ValueError:
+        return None
+    if objetivo.tzinfo is None:
+        objetivo = objetivo.replace(tzinfo=_ahora_local().tzinfo)
+    return objetivo
+
+
 def _parsear_duracion_relativa(texto: str) -> int:
     total_segundos = 0.0
     for valor_txt, unidad in re.findall(r"(\d+(?:[.,]\d+)?)\s*(segundos?|segs?|seg|minutos?|mins?|min|horas?|hora|hs?|dias?|dia)\b", texto):
@@ -325,6 +341,16 @@ def resolver_fecha_hora_desde_texto(cuando: str, default_hour: int = 9, default_
     bruto = (cuando or "").strip()
     if not bruto:
         raise ValueError("faltó la descripción temporal")
+
+    objetivo_iso = _parsear_iso_datetime(bruto)
+    if objetivo_iso is not None:
+        return {
+            "modo": "absoluto",
+            "objetivo": objetivo_iso,
+            "hora": objetivo_iso.strftime("%H:%M"),
+            "vence_iso": objetivo_iso.isoformat(),
+        }
+
     texto = _normalizar_texto(bruto)
 
     segundos = _parsear_duracion_relativa(texto)
