@@ -534,6 +534,40 @@ def volumen(delta: int) -> bool:
     return True
 
 
+def estado_reproduccion() -> dict:
+    _maybe_cleanup_dead_process()
+    if not _mpv_alive():
+        return {
+            "backend": "youtube",
+            "active": False,
+            "paused": False,
+            "reason": "process-not-running",
+        }
+    try:
+        paused = bool(_ipc_command(["get_property", "pause"]))
+        idle_active = bool(_ipc_command(["get_property", "idle-active"]))
+        active = not paused and not idle_active
+        return {
+            "backend": "youtube",
+            "active": active,
+            "paused": paused,
+            "idle_active": idle_active,
+            "reason": "playing" if active else ("paused" if paused else "idle"),
+        }
+    except Exception as e:
+        return {
+            "backend": "youtube",
+            "active": True,
+            "paused": False,
+            "reason": "ipc-unavailable",
+            "error": str(e),
+        }
+
+
+def hay_reproduccion_activa() -> bool:
+    return bool(estado_reproduccion().get("active"))
+
+
 def detener() -> bool:
     global _mpv_process
     _maybe_cleanup_dead_process()

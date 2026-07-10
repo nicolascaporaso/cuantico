@@ -403,6 +403,8 @@ def _ejecutar_pendientes_musica():
     ejecutadas = 0
     if _pendientes_musica:
         print(f"🎧 Ejecutando {len(_pendientes_musica)} acción(es) de música diferida(s)…")
+        mic_info = micro.suspender("music-playback")
+        _debug_emit("B", "music-mic-suspended-for-pending", mic_info)
     while _pendientes_musica:
         fn, args = _pendientes_musica.pop(0)
         try:
@@ -498,6 +500,8 @@ def _ejecutar_musica_programada(evento: dict):
     modo = (payload.get("mode") or "cancion").strip().lower()
     if not query:
         raise ValueError("la tarea programada de música no trae consulta")
+    mic_info = micro.suspender("music-playback")
+    _debug_emit("T", "scheduled-music-mic-suspended", mic_info)
     music_router.detener_todo()
     if modo == "playlist":
         ok = music_router.reproducir_playlist(query, backend=backend)
@@ -511,6 +515,33 @@ def _ejecutar_musica_programada(evento: dict):
     })
     if not ok:
         _hablar(f"No pude arrancar la música programada: {query}.", "embolado")
+
+
+def _sincronizar_microfono_con_musica(activa: bool, estado: dict | None = None):
+    estado = estado or {}
+    if activa:
+        if not micro.esta_suspendido():
+            mic_info = micro.suspender("music-playback")
+            _debug_emit("B", "music-mic-suspended", {"music": estado, "micro": mic_info})
+    else:
+        if micro.esta_suspendido():
+            mic_info = micro.reanudar()
+            _debug_emit("B", "music-mic-resumed", {"music": estado, "micro": mic_info})
+
+
+def _esperar_musica_activa() -> bool:
+    activa, estado = music_router.estado_reproduccion()
+    if not activa:
+        _sincronizar_microfono_con_musica(False, estado)
+        return False
+    _sincronizar_microfono_con_musica(True, estado)
+    _debug_emit("B", "music-radar-block-start", estado)
+    while activa:
+        time.sleep(0.75)
+        activa, estado = music_router.estado_reproduccion()
+    _debug_emit("B", "music-radar-block-end", estado)
+    _sincronizar_microfono_con_musica(False, estado)
+    return True
 
 
 def _ejecutar_luces_programadas(evento: dict):
@@ -1150,10 +1181,17 @@ _restart_requested = False
 
 try:
     while True:
+        if _esperar_musica_activa():
+            continue
         # --- MODO RADAR: espera wake word ---
         luces.cambiar_estado("esperando")
         _debug_emit("B", "loop-radar-enter")
-        texto_usuario = micro.escuchar()
+        try:
+            texto_usuario = micro.escuchar()
+        except micro.MicrofonoSuspendido:
+            _debug_emit("B", "wake-listen-suspended-by-music")
+            time.sleep(0.2)
+            continue
         _debug_emit("B", "wake-listen-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
         # Nueva conversación. Reconstruimos la config cada vez para que los recuerdos añadidos
@@ -1166,7 +1204,12 @@ try:
             if not texto_usuario or texto_usuario.strip() == "":
                 print("☁️  No he entendido nada.")
                 _debug_emit("B", "empty-user-text")
-                texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
+                try:
+                    texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
+                except micro.MicrofonoSuspendido:
+                    _debug_emit("B", "followup-empty-suspended-by-music")
+                    en_conversacion = False
+                    continue
                 if not texto_usuario:
                     _debug_emit("B", "followup-timeout-after-empty")
                     en_conversacion = False
@@ -1246,7 +1289,12 @@ try:
                 _hablar(f"Se me ha frito una neurona, {USER_SHORT_NAME}. Repite eso.", "enfadado")
 
             # Seguimos escuchando sin wake word
-            texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
+            try:
+                texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
+            except micro.MicrofonoSuspendido:
+                _debug_emit("B", "followup-suspended-by-music")
+                en_conversacion = False
+                continue
             _debug_emit("B", "followup-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
 except KeyboardInterrupt:

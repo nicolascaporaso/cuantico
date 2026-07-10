@@ -167,3 +167,31 @@ def volumen(delta: int, backend: str | None = None) -> bool:
 
 def detener_todo() -> bool:
     return music_youtube.detener()
+
+
+def estado_reproduccion() -> tuple[bool, dict]:
+    estados = []
+    for modulo in (music_youtube, spotify):
+        if not hasattr(modulo, "estado_reproduccion"):
+            continue
+        try:
+            estado = modulo.estado_reproduccion()
+        except Exception as e:
+            estado = {
+                "backend": getattr(modulo, "__name__", "unknown"),
+                "active": False,
+                "paused": False,
+                "reason": "state-error",
+                "error": str(e),
+            }
+        estados.append(estado)
+        if estado.get("active"):
+            return True, estado
+    if estados:
+        return False, estados[0]
+    return False, {"backend": "unknown", "active": False, "paused": False, "reason": "no-state"}
+
+
+def hay_reproduccion_activa() -> bool:
+    activa, _ = estado_reproduccion()
+    return activa
