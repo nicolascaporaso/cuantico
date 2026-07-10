@@ -127,8 +127,13 @@ def cambiar_estado(nuevo_estado):
 def _animar():
     global _estado
     while True:
-        if _render_state(_estado):
-            break
+        try:
+            if _render_state(_estado):
+                break
+        except Exception:
+            # Si una emoción o configuración de perfil llega mal, el reactor no debe morir.
+            _estado = "esperando"
+            time.sleep(0.05)
 
 
 def encender_reactor():

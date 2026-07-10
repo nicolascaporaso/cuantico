@@ -115,7 +115,24 @@ def resolve_state_name(state_name: str) -> str:
 
 def get_light_state(state_name: str) -> dict:
     canonical = resolve_state_name(state_name)
-    return ACTIVE_PROFILE["light_states"].get(canonical, ACTIVE_PROFILE["light_states"]["sarcasmo"])
+    light_states = ACTIVE_PROFILE["light_states"]
+    if canonical in light_states:
+        return light_states[canonical]
+
+    fallback_name = resolve_state_name(ACTIVE_PROFILE.get("default_emotion", ""))
+    if fallback_name in light_states:
+        return light_states[fallback_name]
+
+    for candidate in ("sarcasmo", "buena_onda", "joda", "calenton", "chamuyero", "embolado"):
+        resolved = resolve_state_name(candidate)
+        if resolved in light_states:
+            return light_states[resolved]
+
+    for candidate, cfg in light_states.items():
+        if candidate not in _SYSTEM_LIGHT_STATES:
+            return cfg
+
+    return _BASE_LIGHT_STATES["esperando"]
 
 
 def get_reactor_states_for_prompt() -> list[str]:
