@@ -498,20 +498,32 @@ def _ejecutar_musica_programada(evento: dict):
     backend = (payload.get("backend") or "").strip().lower() or None
     query = (payload.get("query") or evento.get("etiqueta") or "").strip()
     modo = (payload.get("mode") or "cancion").strip().lower()
+    backend_resuelto = (backend or music_router.backend_actual()).strip().lower()
+    error = ""
     if not query:
         raise ValueError("la tarea programada de música no trae consulta")
     mic_info = micro.suspender("music-playback")
     _debug_emit("T", "scheduled-music-mic-suspended", mic_info)
     music_router.detener_todo()
-    if modo == "playlist":
-        ok = music_router.reproducir_playlist(query, backend=backend)
+    if backend_resuelto == "youtube":
+        if modo == "playlist":
+            info = music_router.preparar_playlist(query, backend=backend_resuelto)
+        else:
+            info = music_router.preparar_reproduccion(query, backend=backend_resuelto)
+        error = info.get("error", "") if isinstance(info, dict) else ""
+        ok = bool(info.get("ok")) and music_router.ejecutar_preparado(info["prepared"], backend=backend_resuelto)
     else:
-        ok = music_router.reproducir(query, backend=backend)
+        if modo == "playlist":
+            ok = music_router.reproducir_playlist(query, backend=backend_resuelto)
+        else:
+            ok = music_router.reproducir(query, backend=backend_resuelto)
     _debug_emit("T", "scheduled-music-fired", {
         "query": query,
-        "backend": backend or music_router.backend_actual(),
+        "backend": backend_resuelto,
         "mode": modo,
         "ok": ok,
+        "error": error,
+        "recurrence": evento.get("recurrencia") or {},
     })
     if not ok:
         _hablar(f"No pude arrancar la música programada: {query}.", "embolado")
@@ -856,14 +868,23 @@ def programar_recordatorio(cuando: str, mensaje: str) -> str:
         return f"fallo: no pude programar ese recordatorio ({e})"
 
 
-def programar_musica(cuando: str, consulta: str, backend: str = "", como: str = "cancion") -> str:
-    """Programa música para una fecha u hora concreta. Úsala cuando nico pida 'poné tal tema mañana a las 7', 'a las 18 reproducí una playlist chill por youtube' o 'el 5 de marzo arrancá Soda Stereo en spotify'.
+def programar_musica(
+    cuando: str,
+    consulta: str,
+    backend: str = "",
+    como: str = "cancion",
+    recurrencia: str = "una_vez",
+    dias_semana: str = "",
+) -> str:
+    """Programa música para una fecha u hora concreta, o de forma recurrente. Úsala cuando nico pida 'poné tal tema mañana a las 7', 'en 10 minutos arrancá Soda Stereo', 'todos los días a las 7 poneme música tranquila' o 'todos los martes a las 15 reproducí una playlist chill por youtube'.
 
     Args:
         cuando: Momento en que debe arrancar la música.
         consulta: Canción, artista o descripción musical.
         backend: 'spotify' o 'youtube'. Déjalo vacío para usar el backend musical actual.
         como: 'cancion' para una búsqueda concreta o 'playlist' para ambiente/género.
+        recurrencia: 'una_vez', 'diaria' o 'semanal'.
+        dias_semana: Solo para recurrencia semanal. Ej: 'martes' o 'lunes,jueves'.
     """
     backend_normalizado = (backend or music_router.backend_actual()).strip().lower()
     if backend_normalizado not in {"spotify", "youtube"}:
@@ -879,6 +900,8 @@ def programar_musica(cuando: str, consulta: str, backend: str = "", como: str = 
             payload={"query": consulta, "backend": backend_normalizado, "mode": modo},
             default_hour=9,
             default_minute=0,
+            recurrencia=recurrencia,
+            dias_semana=dias_semana,
         )
         return f"ok: música programada por {backend_normalizado} {_programacion_legible(info)}"
     except Exception as e:
@@ -917,10 +940,10 @@ def programar_luces(cuando: str, accion: str, luz: str = "", sistema: str = "", 
         return f"fallo: no pude programar esas luces ({e})"
 
 def listar_temporizadores() -> str:
-    """Lista todos los timers y alarmas activos. Úsalo cuando nico pregunte 'qué timers tengo', 'qué alarmas hay', 'a qué hora me avisas'."""
+    """Lista todas las tareas pendientes: timers, alarmas, recordatorios, música programada y luces. Úsalo cuando nico pregunte 'qué tengo programado', 'qué tareas pendientes hay', 'qué música está agendada', 'qué recordatorios tengo' o 'qué timers hay'."""
     lista = timers.listar()
     if not lista:
-        return "no hay timers ni alarmas activos"
+        return "no hay tareas programadas pendientes"
     partes = []
     for t in lista:
         s = t["vence_en_seg"]
@@ -928,7 +951,22 @@ def listar_temporizadores() -> str:
         m, s2 = divmod(r, 60)
         cuando = f"{h}h{m:02d}m" if h else (f"{m}m{s2:02d}s" if m else f"{s2}s")
         rec = t.get("recurrencia_texto")
-        partes.append(f"{t['tipo']} '{t['etiqueta'] or t['id']}' en {cuando}" + (f" [{rec}]" if rec and rec != "una vez" else ""))
+        payload = t.get("payload") or {}
+        tipo = t["tipo"]
+        etiqueta = t["etiqueta"] or t["id"]
+        if tipo == "musica":
+            backend = (payload.get("backend") or music_router.backend_actual()).strip().lower()
+            modo = (payload.get("mode") or "cancion").strip().lower()
+            descripcion = f"musica {backend} ({modo}) '{etiqueta}'"
+        elif tipo == "recordatorio":
+            descripcion = f"recordatorio '{payload.get('mensaje') or etiqueta}'"
+        elif tipo == "luces":
+            accion = payload.get("action") or "cambio"
+            selector = payload.get("selector") or etiqueta
+            descripcion = f"luces {accion} '{selector}'"
+        else:
+            descripcion = f"{tipo} '{etiqueta}'"
+        partes.append(descripcion + f" en {cuando}" + (f" [{rec}]" if rec and rec != "una vez" else ""))
     return "; ".join(partes)
 
 def cancelar_temporizador(nombre: str) -> str:
@@ -1146,7 +1184,7 @@ if _luces_wiz:
 # Fecha de referencia para que el modelo pueda construir ISOs "mañana a las 5" → 2026-04-23T17:00:00+02:00
 SYSTEM_PROMPT += f"\n\nUSO DE ALARMAS Y TIMERS: para pedidos en lenguaje natural como 'en 30 segundos', 'en 5 minutos', 'en 2 horas', 'mañana a las 7am', 'a las 18:30', 'el 5 de marzo' o '5/3', usa primero la tool `programar_aviso(cuando, etiqueta)` o la tool específica de recordatorios si el usuario habla de recordar algo."
 SYSTEM_PROMPT += "\n\nMUSICA: el backend preferido puede ser Spotify o YouTube. Si nico dice explícitamente 'por spotify', 'usa spotify', 'por youtube' o 'usa youtube', usa primero la tool de selección correspondiente y luego la tool de música."
-SYSTEM_PROMPT += "\n\nTAREAS PROGRAMADAS: si nico pide reproducir música en una fecha futura, usa `programar_musica`. Si pide programar luces para una fecha futura o una recurrencia como todos los días, todos los lunes o lunes y jueves a las 17, usa `programar_luces`. Si pide agendar algo con fecha natural y recordatorio por voz, usa `agendar_evento_inteligente`."
+SYSTEM_PROMPT += "\n\nTAREAS PROGRAMADAS: si nico pide reproducir música en una fecha futura o de forma recurrente como todos los días a las 7 o todos los martes a las 15, usa `programar_musica`. Si pide programar luces para una fecha futura o una recurrencia como todos los días, todos los lunes o lunes y jueves a las 17, usa `programar_luces`. Si pide agendar algo con fecha natural y recordatorio por voz, usa `agendar_evento_inteligente`."
 SYSTEM_PROMPT += "\n\nSISTEMA: si nico pide apagar o reiniciar solo Cuántico, usa las tools `apagar_cuantico` o `reiniciar_cuantico`."
 SYSTEM_PROMPT += f"\n\nFECHA ACTUAL DE REFERENCIA: {config.now_local().strftime('%Y-%m-%d %A %H:%M')} (zona horaria {config.CUANTICO_TIMEZONE})."
 
