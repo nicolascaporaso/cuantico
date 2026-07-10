@@ -9,6 +9,8 @@ import config
 USER_SHORT_NAME = config.USER_SHORT_NAME
 USER_FULL_NAME = config.USER_FULL_NAME
 
+_SYSTEM_LIGHT_STATES = {"esperando", "escuchando", "pensando", "apagado"}
+
 _LEGACY_REPLACEMENTS = (
     ("Fran Garcia", USER_FULL_NAME),
     ("Fran", USER_SHORT_NAME),
@@ -74,8 +76,8 @@ def _build_active_profile(requested_name: str) -> tuple[str, dict]:
         "state_aliases": dict(_BASE_STATE_ALIASES),
         "light_states": deepcopy(_BASE_LIGHT_STATES),
     }
-    merged["state_aliases"].update(raw.get("state_aliases", {}))
-    merged["light_states"].update(deepcopy(raw.get("light_states", {})))
+    merged["state_aliases"].update({k: v for k, v in (raw.get("state_aliases", {}) or {}).items() if k not in _SYSTEM_LIGHT_STATES})
+    merged["light_states"].update({k: v for k, v in deepcopy(raw.get("light_states", {})).items() if k not in _SYSTEM_LIGHT_STATES})
     return selected_name, merged
 
 
@@ -106,6 +108,8 @@ def set_active_profile(nombre: str, persist: bool = True) -> tuple[str, dict]:
 
 
 def resolve_state_name(state_name: str) -> str:
+    if state_name in _SYSTEM_LIGHT_STATES:
+        return state_name
     return ACTIVE_PROFILE["state_aliases"].get(state_name, state_name)
 
 

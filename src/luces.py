@@ -120,7 +120,7 @@ def _render_state(state_name: str):
 
 def cambiar_estado(nuevo_estado):
     global _estado
-    _estado = profile.resolve_state_name(nuevo_estado)
+    _estado = nuevo_estado if nuevo_estado in {"esperando", "escuchando", "pensando", "apagado"} else profile.resolve_state_name(nuevo_estado)
     wiz_controller.sincronizar_estado_si_activo(_estado)
 
 

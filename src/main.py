@@ -771,7 +771,7 @@ def cambiar_personalidad(modo: str) -> str:
     profile.set_active_profile(destino, persist=True)
     ACTIVE_PROFILE_NAME = profile.get_active_profile_name()
     _reconstruir_system_prompt()
-    luces.cambiar_estado(profile.detectar_emocion("hola"))
+    luces.cambiar_estado("esperando")
     _force_new_conversation = True
     return f"ok: modo {ACTIVE_PROFILE_NAME}"
 
