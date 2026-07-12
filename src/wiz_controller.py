@@ -305,11 +305,22 @@ def _apply_many(entries: list[dict], builder=None, turn_off: bool = False) -> bo
     if not entries:
         return False
     results = _run(_apply_builder_many(entries, builder=builder, turn_off=turn_off))
-    ok = True
-    for result in results:
-        if isinstance(result, Exception):
-            ok = False
-    return ok
+    any_success = False
+    changed = False
+    now = _now_iso()
+    for entry, result in zip(entries, results):
+        success = not isinstance(result, Exception)
+        if success:
+            any_success = True
+        if entry.get("online") != success:
+            entry["online"] = success
+            changed = True
+        if success and entry.get("last_seen") != now:
+            entry["last_seen"] = now
+            changed = True
+    if changed:
+        _save_state()
+    return any_success
 
 
 def _stop_effect():

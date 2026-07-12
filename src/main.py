@@ -122,23 +122,35 @@ SYSTEM_PROMPT = profile.render_main_prompt()
 # ---------- TOOLS ----------
 
 def encender_luces_casa(luz: str = "") -> str:
-    """Enciende luces Govee de la casa. Úsala cuando nico pida encender, prender o dar luz, o hable de estar a oscuras.
+    """Enciende luces de la casa. Si el nombre coincide con una WiZ registrada (ej. velador), enrútala a WiZ; si no, usa Govee.
 
     Args:
         luz: (opcional) Nombre de la luz concreta a encender (ej: 'Esfera'). Déjalo vacío para encender TODAS las luces.
     """
+    sistema = _resolver_sistema_luz(luz=luz) if luz else "govee"
+    if sistema == "wiz":
+        try:
+            return "ok" if wiz_controller.encender(luz) else "fallo: esa luz WiZ no existe o no responde"
+        except Exception as e:
+            return f"fallo: {e}"
     return "ok" if govee.encender_todas(luz or None) else "fallo: esa luz no existe o no responde (wifi caído?)"
 
 def apagar_luces_casa(luz: str = "") -> str:
-    """Apaga luces Govee de la casa. Úsala cuando nico pida apagar, quitar luz, irse a dormir o poner todo a oscuras.
+    """Apaga luces de la casa. Si el nombre coincide con una WiZ registrada (ej. velador), enrútala a WiZ; si no, usa Govee.
 
     Args:
         luz: (opcional) Nombre de la luz concreta a apagar. Déjalo vacío para apagar TODAS.
     """
+    sistema = _resolver_sistema_luz(luz=luz) if luz else "govee"
+    if sistema == "wiz":
+        try:
+            return "ok" if wiz_controller.apagar(luz) else "fallo: no pude apagar esa luz WiZ"
+        except Exception as e:
+            return f"fallo: {e}"
     return "ok" if govee.apagar_todas(luz or None) else "fallo: esa luz no existe o no responde (wifi caído?)"
 
 def cambiar_color_luces(r: int, g: int, b: int, luz: str = "") -> str:
-    """Cambia el color de las luces Govee. Tú traduces el color/ambiente que pide nico a RGB. Ejemplos: rojo=255,0,0; azul=0,0,255; azul cielo=135,206,235; blanco cálido=255,180,120; morado=160,32,240; verde lima=50,205,50; naranja atardecer=255,140,0; rosa pastel=255,182,193; rojo romántico=180,0,30. Para ambientes ("modo fiesta", "modo peli de terror", "gaming"), elige un color que encaje.
+    """Cambia el color de las luces de la casa. Si el nombre coincide con una WiZ registrada (ej. velador), enrútala a WiZ; si no, usa Govee. Tú traduces el color/ambiente que pide nico a RGB. Ejemplos: rojo=255,0,0; azul=0,0,255; azul cielo=135,206,235; blanco cálido=255,180,120; morado=160,32,240; verde lima=50,205,50; naranja atardecer=255,140,0; rosa pastel=255,182,193; rojo romántico=180,0,30. Para ambientes ("modo fiesta", "modo peli de terror", "gaming"), elige un color que encaje.
 
     Args:
         r: Componente rojo (0-255).
@@ -146,15 +158,27 @@ def cambiar_color_luces(r: int, g: int, b: int, luz: str = "") -> str:
         b: Componente azul (0-255).
         luz: (opcional) Nombre de la luz concreta (ej: 'Esfera'). Déjalo vacío para todas.
     """
+    sistema = _resolver_sistema_luz(luz=luz) if luz else "govee"
+    if sistema == "wiz":
+        try:
+            return "ok" if wiz_controller.cambiar_color(r, g, b, luz, brillo=100) else "fallo: no pude cambiar el color WiZ"
+        except Exception as e:
+            return f"fallo: {e}"
     return "ok" if govee.cambiar_color_todas(r, g, b, luz or None) else "fallo: esa luz no existe o no soporta color"
 
 def cambiar_brillo_luces(porcentaje: int, luz: str = "") -> str:
-    """Ajusta el brillo de las luces Govee. Útil cuando nico dice 'baja las luces', 'sube la intensidad', 'modo lectura' (brillo alto), 'ambiente romántico' (brillo bajo).
+    """Ajusta el brillo de las luces de la casa. Si el nombre coincide con una WiZ registrada (ej. velador), enrútala a WiZ; si no, usa Govee. Útil cuando nico dice 'baja las luces', 'sube la intensidad', 'modo lectura' (brillo alto), 'ambiente romántico' (brillo bajo).
 
     Args:
         porcentaje: Brillo de 1 (casi apagado) a 100 (máximo). Nunca 0 — para apagar usa apagar_luces_casa.
         luz: (opcional) Nombre de la luz concreta. Déjalo vacío para todas.
     """
+    sistema = _resolver_sistema_luz(luz=luz) if luz else "govee"
+    if sistema == "wiz":
+        try:
+            return "ok" if wiz_controller.fijar_brillo(porcentaje, luz) else "fallo: no pude ajustar el brillo WiZ"
+        except Exception as e:
+            return f"fallo: {e}"
     return "ok" if govee.cambiar_brillo_todas(porcentaje, luz or None) else "fallo: esa luz no existe o no acepta brillo"
 
 
