@@ -37,6 +37,10 @@ _button_conversation_requested = False
 _button_conversation_active = False
 _button_pause_active = False
 _button_resume_pending_until = 0.0
+_button_conversation_mode = ""
+_radar_enabled = True
+_active_listening_context = ""
+_listening_cancel_requested = False
 
 
 class _RestartRequested(Exception):
@@ -563,8 +567,39 @@ def _restaurar_luces_modo_reproduccion():
     luces.cambiar_estado(profile.detectar_emocion(""))
 
 
+def _radar_esta_habilitado() -> bool:
+    with _button_state_lock:
+        return _radar_enabled
+
+
+def _marcar_escucha_activa(context: str | None = None, cancel_requested: bool | None = None):
+    global _active_listening_context, _listening_cancel_requested
+    with _button_state_lock:
+        if context is not None:
+            _active_listening_context = context
+        if cancel_requested is not None:
+            _listening_cancel_requested = cancel_requested
+
+
+def _contexto_escucha_activa() -> str:
+    with _button_state_lock:
+        return _active_listening_context
+
+
+def _consumir_cancelacion_escucha() -> bool:
+    global _listening_cancel_requested
+    with _button_state_lock:
+        if not _listening_cancel_requested:
+            return False
+        _listening_cancel_requested = False
+        return True
+
+
 def _restaurar_luces_segun_contexto():
     estado_control, _estado = _estado_control_reproduccion()
+    if not _radar_esta_habilitado() and estado_control == "IDLE":
+        luces.cambiar_estado("apagado")
+        return
     if estado_control in {"PLAYING", "PAUSED", "CONVERSATION"}:
         _restaurar_luces_modo_reproduccion()
     else:
@@ -591,8 +626,9 @@ def _marcar_conversacion_boton(
     active: bool | None = None,
     paused: bool | None = None,
     resume_pending_until: float | None = None,
+    mode: str | None = None,
 ):
-    global _button_conversation_requested, _button_conversation_active, _button_pause_active, _button_resume_pending_until
+    global _button_conversation_requested, _button_conversation_active, _button_pause_active, _button_resume_pending_until, _button_conversation_mode
     with _button_state_lock:
         if requested is not None:
             _button_conversation_requested = requested
@@ -602,11 +638,15 @@ def _marcar_conversacion_boton(
             _button_pause_active = paused
         if resume_pending_until is not None:
             _button_resume_pending_until = float(resume_pending_until)
+        if mode is not None:
+            _button_conversation_mode = str(mode)
 
 
 def _manejar_evento_boton(event_name: str, payload: dict | None = None):
     payload = payload or {}
     estado_control, estado = _estado_control_reproduccion()
+    listening_context = _contexto_escucha_activa()
+    radar_enabled = _radar_esta_habilitado()
     _debug_emit("BTN", "button-event", {"event": event_name, "state": estado_control, "playback": estado, "payload": payload})
 
     if event_name == button_controller.BUTTON_SINGLE_CLICK:
@@ -639,22 +679,50 @@ def _manejar_evento_boton(event_name: str, payload: dict | None = None):
         return
 
     if event_name == button_controller.BUTTON_DOUBLE_CLICK:
+        if estado_control == "IDLE" and listening_context:
+            _marcar_escucha_activa(cancel_requested=True)
+            _marcar_conversacion_boton(requested=False, active=False, paused=False, resume_pending_until=0.0, mode="")
+            micro.suspender("button-listen-cancel")
+            _restaurar_luces_segun_contexto()
+            _debug_emit("BTN", "button-double-cancel-listen", {"context": listening_context})
+            return
         if estado_control in {"PLAYING", "PAUSED"}:
             ok = True if estado_control == "PAUSED" else music_router.pausar_para_conversacion()
-            _marcar_conversacion_boton(requested=True, active=False, paused=True, resume_pending_until=0.0)
+            _marcar_conversacion_boton(requested=True, active=False, paused=True, resume_pending_until=0.0, mode="music")
             micro.reanudar()
             _debug_emit("BTN", "button-double-conversation", {"ok": ok, "playback": estado})
+        elif estado_control == "IDLE" and radar_enabled:
+            _marcar_conversacion_boton(requested=True, active=False, paused=False, resume_pending_until=0.0, mode="radar")
+            _marcar_escucha_activa(cancel_requested=False)
+            micro.reanudar()
+            _debug_emit("BTN", "button-double-radar-listen", {})
         return
 
     if event_name == button_controller.BUTTON_TRIPLE_CLICK:
         if estado_control in {"PLAYING", "PAUSED", "CONVERSATION"}:
-            _marcar_conversacion_boton(requested=False, active=False, paused=False, resume_pending_until=0.0)
+            _marcar_conversacion_boton(requested=False, active=False, paused=False, resume_pending_until=0.0, mode="")
             _limpiar_pendientes_musica()
             _cancelar_corte_musica_existente()
             ok = music_router.detener_todo()
             micro.reanudar()
             luces.cambiar_estado("esperando")
             _debug_emit("BTN", "button-triple-stop", {"ok": ok, "playback": estado})
+        elif estado_control == "IDLE":
+            nuevo = not radar_enabled
+            with _button_state_lock:
+                global _radar_enabled
+                _radar_enabled = nuevo
+            _marcar_conversacion_boton(requested=False, active=False, paused=False, resume_pending_until=0.0, mode="")
+            if not nuevo:
+                if listening_context:
+                    _marcar_escucha_activa(cancel_requested=True)
+                micro.suspender("radar-disabled")
+                luces.cambiar_estado("apagado")
+            else:
+                _marcar_escucha_activa(cancel_requested=False)
+                micro.reanudar()
+                luces.cambiar_estado("esperando")
+            _debug_emit("BTN", "button-triple-radar-toggle", {"enabled": nuevo, "listening_context": listening_context})
         return
 
 
@@ -1523,12 +1591,22 @@ def _ejecutar_conversacion(texto_usuario: str | None, chat, origen: str = "radar
         if not texto_usuario or texto_usuario.strip() == "":
             print("☁️  No he entendido nada.")
             _debug_emit("B", "empty-user-text", {"origin": origen})
+            _marcar_escucha_activa(context="followup", cancel_requested=False)
             try:
                 texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
             except micro.MicrofonoSuspendido:
+                _marcar_escucha_activa(context="")
+                if _consumir_cancelacion_escucha():
+                    _debug_emit("B", "followup-cancelled-by-button", {"origin": origen})
+                    if _radar_esta_habilitado():
+                        micro.reanudar()
+                    en_conversacion = False
+                    continue
                 _debug_emit("B", "followup-empty-suspended-by-music", {"origin": origen})
                 en_conversacion = False
                 continue
+            finally:
+                _marcar_escucha_activa(context="")
             if not texto_usuario:
                 _debug_emit("B", "followup-timeout-after-empty", {"origin": origen})
                 en_conversacion = False
@@ -1607,11 +1685,21 @@ def _ejecutar_conversacion(texto_usuario: str | None, chat, origen: str = "radar
             _hablar(f"Se me ha frito una neurona, {USER_SHORT_NAME}. Repite eso.", "enfadado")
 
         try:
+            _marcar_escucha_activa(context="followup", cancel_requested=False)
             texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
         except micro.MicrofonoSuspendido:
+            _marcar_escucha_activa(context="")
+            if _consumir_cancelacion_escucha():
+                _debug_emit("B", "followup-cancelled-by-button", {"origin": origen})
+                if _radar_esta_habilitado():
+                    micro.reanudar()
+                en_conversacion = False
+                continue
             _debug_emit("B", "followup-suspended-by-music", {"origin": origen})
             en_conversacion = False
             continue
+        finally:
+            _marcar_escucha_activa(context="")
         _debug_emit("B", "followup-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120], "origin": origen})
 
 
@@ -1619,27 +1707,47 @@ def _iniciar_conversacion_desde_boton() -> bool:
     with _button_state_lock:
         if not _button_conversation_requested:
             return False
-        _marcar_conversacion_boton(requested=False, active=True, paused=True)
+        modo = _button_conversation_mode or "radar"
+        _marcar_conversacion_boton(requested=False, active=True, paused=(modo == "music"), mode=modo)
     _reconstruir_system_prompt()
     chat = _crear_chat_turno(_prompt_con_memoria(), TOOLS)
     luces.cambiar_estado("escuchando")
-    _debug_emit("BTN", "button-conversation-start", {})
+    _debug_emit("BTN", "button-conversation-start", {"mode": modo})
+    _marcar_escucha_activa(context=f"button-{modo}", cancel_requested=False)
     try:
         texto_usuario = micro.escuchar_seguimiento(timeout_ms=10000)
     except micro.MicrofonoSuspendido:
-        texto_usuario = None
+        _marcar_escucha_activa(context="")
+        if _consumir_cancelacion_escucha():
+            _debug_emit("BTN", "button-conversation-cancelled", {"mode": modo})
+            if _radar_esta_habilitado() and modo == "radar":
+                micro.reanudar()
+            texto_usuario = None
+        else:
+            texto_usuario = None
+    finally:
+        _marcar_escucha_activa(context="")
+    if texto_usuario is None and modo == "radar":
+        _marcar_conversacion_boton(active=False, paused=False, resume_pending_until=0.0, mode="")
+        _restaurar_luces_segun_contexto()
+        return True
     try:
         _ejecutar_conversacion(texto_usuario, chat, origen="button")
     finally:
-        _marcar_conversacion_boton(active=False, paused=True, resume_pending_until=0.0)
+        _marcar_conversacion_boton(active=False, paused=(modo == "music"), resume_pending_until=0.0, mode="")
         try:
             activa, _estado = music_router.estado_reproduccion()
         except Exception:
             activa = False
-        if not activa:
-            micro.suspender("button-paused")
+        if modo == "music":
+            if not activa:
+                micro.suspender("button-paused")
+        elif not _radar_esta_habilitado():
+            micro.suspender("radar-disabled")
+        else:
+            micro.reanudar()
         _restaurar_luces_segun_contexto()
-        _debug_emit("BTN", "button-conversation-end", {})
+        _debug_emit("BTN", "button-conversation-end", {"mode": modo})
     return True
 
 
@@ -1684,15 +1792,32 @@ try:
             continue
         if _iniciar_conversacion_desde_boton():
             continue
+        if not _radar_esta_habilitado():
+            luces.cambiar_estado("apagado")
+            if not micro.esta_suspendido():
+                micro.suspender("radar-disabled")
+            time.sleep(0.15)
+            continue
         # --- MODO RADAR: espera wake word ---
         luces.cambiar_estado("esperando")
         _debug_emit("B", "loop-radar-enter")
+        _marcar_escucha_activa(context="radar", cancel_requested=False)
         try:
             texto_usuario = micro.escuchar()
         except micro.MicrofonoSuspendido:
+            _marcar_escucha_activa(context="")
+            if _consumir_cancelacion_escucha():
+                _debug_emit("B", "wake-listen-cancelled-by-button")
+                if _radar_esta_habilitado():
+                    micro.reanudar()
+                _restaurar_luces_segun_contexto()
+                time.sleep(0.1)
+                continue
             _debug_emit("B", "wake-listen-suspended-by-music")
             time.sleep(0.2)
             continue
+        finally:
+            _marcar_escucha_activa(context="")
         _debug_emit("B", "wake-listen-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
 
         # Nueva conversación. Reconstruimos la config cada vez para que los recuerdos añadidos

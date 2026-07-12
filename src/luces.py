@@ -18,6 +18,7 @@ pixels = neopixel.NeoPixel(PIN_LEDS, NUM_PIXELS, brightness=BRIGHTNESS, auto_wri
 
 _estado = "esperando"
 _hilo_luces = None
+_stop_event = threading.Event()
 _animaciones_pendientes = []
 _animaciones_lock = threading.Lock()
 _OUTER_BUTTON_PIXELS = [0, 1, 2, 3, 7, 11, 15, 14, 13, 12, 8, 4]
@@ -110,7 +111,8 @@ def _render_state(state_name: str):
     now = time.time()
     if effect == "off":
         _fill((0, 0, 0))
-        return True
+        time.sleep(cfg.get("sleep_s", 0.05))
+        return False
     if effect == "pulse":
         _apply_pulse(cfg, now)
     elif effect == "spinner":
@@ -177,14 +179,13 @@ def _animar_feedback_boton(animacion: dict):
 
 def _animar():
     global _estado
-    while True:
+    while not _stop_event.is_set():
         try:
             animacion = _tomar_animacion_pendiente()
             if animacion:
                 _animar_feedback_boton(animacion)
                 continue
-            if _render_state(_estado):
-                break
+            _render_state(_estado)
         except Exception:
             # Si una emoción o configuración de perfil llega mal, el reactor no debe morir.
             _estado = "esperando"
@@ -193,11 +194,15 @@ def _animar():
 
 def encender_reactor():
     global _hilo_luces
+    _stop_event.clear()
+    if _hilo_luces and _hilo_luces.is_alive():
+        return
     _hilo_luces = threading.Thread(target=_animar, daemon=True)
     _hilo_luces.start()
 
 
 def apagar_reactor():
     cambiar_estado("apagado")
+    _stop_event.set()
     if _hilo_luces:
         _hilo_luces.join(timeout=1.0)
