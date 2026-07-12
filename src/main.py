@@ -505,6 +505,11 @@ def _limpiar_pendientes_musica():
     _silenciar_tts_musica_pendiente = False
 
 
+def _restaurar_luces_modo_reproduccion():
+    # Mientras el botón controla música no queremos estados visuales de radar.
+    luces.cambiar_estado(profile.detectar_emocion(""))
+
+
 def _estado_control_reproduccion() -> tuple[str, dict]:
     global _button_conversation_requested, _button_conversation_active, _button_pause_active
     activa, estado = music_router.estado_reproduccion()
@@ -546,12 +551,14 @@ def _manejar_evento_boton(event_name: str, payload: dict | None = None):
             _marcar_conversacion_boton(requested=False, active=False, paused=ok)
             if ok:
                 micro.suspender("button-paused")
+                _restaurar_luces_modo_reproduccion()
             _debug_emit("BTN", "button-single-pause", {"ok": ok, "playback": estado})
         elif estado_control in {"PAUSED", "CONVERSATION"}:
             ok = music_router.reanudar()
             if ok:
                 _marcar_conversacion_boton(requested=False, active=False, paused=False)
                 micro.suspender("music-playback")
+                _restaurar_luces_modo_reproduccion()
             else:
                 _marcar_conversacion_boton(requested=False, active=False, paused=True)
             _debug_emit("BTN", "button-single-resume", {"ok": ok, "playback": estado})
@@ -645,12 +652,14 @@ def _esperar_musica_activa() -> bool:
         if not micro.esta_suspendido():
             mic_info = micro.suspender("button-paused")
             _debug_emit("B", "button-pause-mic-suspended", {"music": estado, "micro": mic_info})
+        _restaurar_luces_modo_reproduccion()
         time.sleep(0.15)
         return True
     if not activa:
         _sincronizar_microfono_con_musica(False, estado)
         return False
     _sincronizar_microfono_con_musica(True, estado)
+    _restaurar_luces_modo_reproduccion()
     _debug_emit("B", "music-radar-block-start", estado)
     while activa:
         time.sleep(0.75)
@@ -1541,6 +1550,7 @@ def _iniciar_conversacion_desde_boton() -> bool:
             activa = False
         if not activa:
             micro.suspender("button-paused")
+            _restaurar_luces_modo_reproduccion()
         _debug_emit("BTN", "button-conversation-end", {})
     return True
 

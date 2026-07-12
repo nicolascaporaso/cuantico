@@ -263,7 +263,12 @@ def _asegurar_socket(timeout_seg: float = 8.0) -> bool:
     return _esperar_socket_mpv(timeout_seg=timeout_seg)
 
 
-def _iniciar_mpv(items: list[dict], *, start_paused: bool = False):
+def _iniciar_mpv(
+    items: list[dict],
+    *,
+    start_paused: bool = False,
+    start_position_sec: float = 0.0,
+):
     global _mpv_process, _mpv_route
     _maybe_cleanup_dead_process()
     if _mpv_alive():
@@ -304,6 +309,7 @@ def _iniciar_mpv(items: list[dict], *, start_paused: bool = False):
         f"--audio-device=alsa/{salida['device']}",
         f"--input-ipc-server={_socket_path}",
         "--network-timeout=10",
+        *(["--start=" + str(max(0.0, float(start_position_sec or 0.0)))] if float(start_position_sec or 0.0) > 0.25 else []),
         *(["--pause=yes"] if start_paused else []),
         *[item["stream_url"] for item in items],
     ]
@@ -521,7 +527,7 @@ def reanudar() -> bool:
         if not restantes:
             return False
         try:
-            _iniciar_mpv(restantes, start_paused=True)
+            _iniciar_mpv(restantes, start_paused=True, start_position_sec=position_sec)
         except Exception:
             reconstruidos = []
             for item in restantes:
@@ -531,11 +537,9 @@ def reanudar() -> bool:
                     reconstruidos.append(dict(item))
             if not reconstruidos:
                 raise
-            _iniciar_mpv(reconstruidos, start_paused=True)
+            _iniciar_mpv(reconstruidos, start_paused=True, start_position_sec=position_sec)
             restantes = reconstruidos
         try:
-            if position_sec > 0.25:
-                _ipc_command(["seek", position_sec, "absolute+exact"])
             _ipc_command(["set_property", "pause", False])
         except Exception:
             try:
