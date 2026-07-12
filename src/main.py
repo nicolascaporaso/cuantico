@@ -167,7 +167,10 @@ def buscar_luces_wiz() -> str:
     if not luces_wiz:
         return "no encontré luces WiZ en la red"
     return "; ".join(
-        f"{item['name']} ({item['ip']})" + (" ya registrada" if item.get("known") else "")
+        f"{item['name']} ({item['ip']})"
+        + (f", mac {item['mac']}" if item.get("mac") else "")
+        + (" ya registrada" if item.get("known") else " nueva")
+        + (" con IP actualizada" if item.get("ip_changed") else "")
         for item in luces_wiz
     )
 
@@ -201,9 +204,34 @@ def renombrar_luz_wiz(luz: str, nombre_nuevo: str) -> str:
 
 
 def listar_luces_wiz() -> str:
-    """Lista las luces WiZ registradas y si está activo el modo de copiar emociones. Úsala cuando nico pregunte qué luces WiZ hay, cómo se llaman o si quedó activo el sync emocional."""
+    """Lista las luces WiZ registradas, cuántas están online y si está activo el modo de copiar emociones. Úsala cuando nico pregunte qué luces WiZ hay, cómo se llaman, cuántas tiene registradas, cuántas están online o si quedó activo el sync emocional."""
     try:
         return wiz_controller.resumen_estado()
+    except Exception as e:
+        return f"fallo: {e}"
+
+
+def contar_luces_wiz() -> str:
+    """Resume cuántas luces WiZ hay registradas, cuántas están online y cuántas offline. Úsala para preguntas como 'cuántas luces WiZ tengo', 'cuántas están online' o 'decime el estado de mis WiZ'."""
+    try:
+        info = wiz_controller.contar_luces()
+    except Exception as e:
+        return f"fallo: {e}"
+    base = (
+        f"WiZ registradas: {info['registered']}. "
+        f"Online: {info['online']}. "
+        f"Offline: {info['offline']}."
+    )
+    if info.get("discovery_error"):
+        base += f" No pude refrescar discovery ahora: {info['discovery_error']}"
+    return base
+
+
+def eliminar_luz_wiz(luz: str) -> str:
+    """Elimina una luz WiZ registrada por nombre, IP o MAC. Úsala cuando nico pida borrar, quitar, eliminar u olvidar una luz vieja del registro."""
+    try:
+        info = wiz_controller.eliminar_luz(luz)
+        return f"ok: eliminé la luz WiZ {info['name']} ({info['ip']})"
     except Exception as e:
         return f"fallo: {e}"
 
@@ -1383,6 +1411,7 @@ def listar_recuerdos() -> str:
 TOOLS = [
     encender_luces_casa, apagar_luces_casa, cambiar_color_luces, cambiar_brillo_luces,
     buscar_luces_wiz, agregar_luz_wiz, renombrar_luz_wiz, listar_luces_wiz,
+    contar_luces_wiz, eliminar_luz_wiz,
     encender_luces_wiz, apagar_luces_wiz, cambiar_color_luces_wiz,
     fijar_brillo_luces_wiz, ajustar_brillo_luces_wiz, poner_luz_lectura_wiz,
     parpadear_luces_wiz, efecto_luces_wiz, copiar_emocion_a_luz_wiz,

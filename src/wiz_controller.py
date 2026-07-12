@@ -39,6 +39,56 @@ def _now_iso() -> str:
     return config.now_local().isoformat()
 
 
+def _normalize_mac(value: str = "") -> str:
+    raw = "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+    return raw
+
+
+def _friendly_name(ip: str, mac: str = "") -> str:
+    if mac:
+        return f"wiz-{mac[-4:]}"
+    last = ip.split(".")[-1] if ip else "wiz"
+    return f"wiz-{last}"
+
+
+def _migrate_entry(entry: dict) -> dict:
+    item = {
+        "name": str(entry.get("name") or entry.get("nombre") or "").strip(),
+        "ip": str(entry.get("ip") or "").strip(),
+        "mac": _normalize_mac(entry.get("mac", "")),
+        "added_at": entry.get("added_at") or _now_iso(),
+        "last_seen": entry.get("last_seen") or "",
+        "last_state": entry.get("last_state") if isinstance(entry.get("last_state"), dict) else {},
+    }
+    if not item["name"]:
+        item["name"] = _friendly_name(item["ip"], item["mac"])
+    return item
+
+
+def _dedupe_lights(entries: list[dict]) -> list[dict]:
+    by_key: dict[str, dict] = {}
+    ordered: list[dict] = []
+    for raw in entries or []:
+        item = _migrate_entry(raw if isinstance(raw, dict) else {})
+        key = f"mac:{item['mac']}" if item.get("mac") else f"ip:{item.get('ip', '')}"
+        if key in by_key:
+            current = by_key[key]
+            if item.get("ip"):
+                current["ip"] = item["ip"]
+            if item.get("name"):
+                current["name"] = item["name"]
+            if item.get("last_seen"):
+                current["last_seen"] = item["last_seen"]
+            if item.get("last_state"):
+                current["last_state"] = item["last_state"]
+            if item.get("added_at") and not current.get("added_at"):
+                current["added_at"] = item["added_at"]
+            continue
+        by_key[key] = item
+        ordered.append(item)
+    return ordered
+
+
 def _load_state():
     global _state
     if not _STATE_PATH.exists():
@@ -49,7 +99,7 @@ def _load_state():
         if not isinstance(raw, dict):
             raise ValueError("wiz_lights.json debe contener un objeto")
         _state = deepcopy(_DEFAULT_STATE)
-        _state["lights"] = raw.get("lights", [])
+        _state["lights"] = _dedupe_lights(raw.get("lights", []))
         if isinstance(raw.get("emotion_sync"), dict):
             _state["emotion_sync"].update(raw["emotion_sync"])
     except Exception:
@@ -57,6 +107,7 @@ def _load_state():
 
 
 def _save_state():
+    _state["lights"] = _dedupe_lights(_state.get("lights", []))
     _STATE_PATH.write_text(json.dumps(_state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -88,20 +139,9 @@ def _brightness_from_byte(value) -> int:
         return 0
 
 
-def _find_registered_by_ip(ip: str) -> dict | None:
-    for entry in _state["lights"]:
-        if entry.get("ip") == ip:
-            return entry
-    return None
-
-
-def _friendly_name(ip: str) -> str:
-    last = ip.split(".")[-1] if ip else "wiz"
-    return f"wiz-{last}"
-
-
 def _match_selector(items: list[dict], selector: str) -> list[dict]:
     key = (selector or "").strip().lower()
+    norm_key = _normalize_mac(key)
     if not key:
         return items
     exact = [
@@ -110,16 +150,16 @@ def _match_selector(items: list[dict], selector: str) -> list[dict]:
             str(item.get("ip", "")).lower(),
             str(item.get("name", "")).lower(),
         }
+        or (norm_key and norm_key == _normalize_mac(item.get("mac", "")))
     ]
     if exact:
         return exact
     partial = []
     for item in items:
-        if (
-            key in str(item.get("name", "")).lower()
-            or key in str(item.get("ip", "")).lower()
-            or str(item.get("name", "")).lower() in key
-        ):
+        name = str(item.get("name", "")).lower()
+        ip = str(item.get("ip", "")).lower()
+        mac = _normalize_mac(item.get("mac", ""))
+        if key in name or key in ip or name in key or (norm_key and norm_key in mac):
             partial.append(item)
     return partial
 
@@ -138,6 +178,24 @@ def _resolve_discovery_or_registered(selector: str) -> dict | None:
         matched = _match_selector(list(collection), selector)
         if matched:
             return matched[0]
+    return None
+
+
+def _find_registered_by_ip(ip: str) -> dict | None:
+    ip = str(ip or "").strip()
+    for entry in _state["lights"]:
+        if entry.get("ip") == ip:
+            return entry
+    return None
+
+
+def _find_registered_by_mac(mac: str) -> dict | None:
+    norm_mac = _normalize_mac(mac)
+    if not norm_mac:
+        return None
+    for entry in _state["lights"]:
+        if _normalize_mac(entry.get("mac", "")) == norm_mac:
+            return entry
     return None
 
 
@@ -170,6 +228,53 @@ async def _fetch_state_async(ip: str) -> dict:
         "scene": state.get_scene() if hasattr(state, "get_scene") else "",
         "colortemp": state.get_colortemp() if hasattr(state, "get_colortemp") else None,
     }
+
+
+async def _fetch_config_async(ip: str) -> dict:
+    light = wizlight(ip)
+    get_cfg = getattr(light, "getBulbConfig", None) or getattr(light, "get_bulb_config", None)
+    if get_cfg is None:
+        return {}
+    cfg = await get_cfg()
+    if isinstance(cfg, dict):
+        return cfg
+    if hasattr(cfg, "__dict__"):
+        return dict(cfg.__dict__)
+    return {}
+
+
+async def _discover_details_async() -> list[dict]:
+    bulbs = await _discover_async()
+    found = []
+    for bulb in bulbs or []:
+        ip = str(getattr(bulb, "ip", "") or getattr(bulb, "ip_address", "") or "").strip()
+        if not ip:
+            continue
+        mac = _normalize_mac(
+            getattr(bulb, "mac", "")
+            or getattr(bulb, "mac_address", "")
+            or getattr(bulb, "macaddr", "")
+        )
+        cfg = {}
+        if not mac:
+            with contextlib.suppress(Exception):
+                cfg = await _fetch_config_async(ip)
+                mac = _normalize_mac(cfg.get("mac", ""))
+        else:
+            with contextlib.suppress(Exception):
+                cfg = await _fetch_config_async(ip)
+        found.append(
+            {
+                "ip": ip,
+                "mac": mac,
+                "home_id": cfg.get("homeId"),
+                "room_id": cfg.get("roomId"),
+                "module_name": cfg.get("moduleName", ""),
+                "fw_version": cfg.get("fwVersion", ""),
+                "group_id": cfg.get("groupId"),
+            }
+        )
+    return found
 
 
 async def _turn_on_async(ip: str, builder=None):
@@ -220,6 +325,34 @@ def _stop_effect():
         thread.join(timeout=1.0)
 
 
+def _touch_registry_from_discovery(found: list[dict]):
+    changed = False
+    now = _now_iso()
+    for item in found:
+        mac = item.get("mac", "")
+        ip = item.get("ip", "")
+        entry = _find_registered_by_mac(mac) or _find_registered_by_ip(ip)
+        if entry is None:
+            continue
+        if mac and entry.get("mac") != mac:
+            entry["mac"] = mac
+            changed = True
+        if ip and entry.get("ip") != ip:
+            entry["ip"] = ip
+            changed = True
+        for key in ("home_id", "room_id", "module_name", "fw_version", "group_id"):
+            value = item.get(key)
+            if value is not None and value != "" and entry.get(key) != value:
+                entry[key] = value
+                changed = True
+        if entry.get("last_seen") != now:
+            entry["last_seen"] = now
+            changed = True
+        entry["online"] = True
+    if changed:
+        _save_state()
+
+
 def inicializar():
     _load_state()
     ok, reason = disponible()
@@ -235,22 +368,31 @@ def buscar_luces() -> list[dict]:
     ok, reason = disponible()
     if not ok:
         raise RuntimeError(reason)
-    bulbs = _run(_discover_async())
-    found = []
-    for bulb in bulbs or []:
-        ip = getattr(bulb, "ip", "") or getattr(bulb, "ip_address", "")
-        if not ip:
-            continue
-        existing = _find_registered_by_ip(ip)
-        found.append({
-            "ip": str(ip),
-            "name": existing.get("name") if existing else _friendly_name(str(ip)),
-            "known": bool(existing),
-            "last_seen": _now_iso(),
-        })
+    found = _run(_discover_details_async())
+    enriched = []
+    for item in found:
+        mac = item.get("mac", "")
+        ip = item.get("ip", "")
+        existing = _find_registered_by_mac(mac) or _find_registered_by_ip(ip)
+        enriched.append(
+            {
+                "ip": ip,
+                "mac": mac,
+                "name": existing.get("name") if existing else _friendly_name(ip, mac),
+                "known": bool(existing),
+                "ip_changed": bool(existing and ip and existing.get("ip") and existing.get("ip") != ip),
+                "last_seen": _now_iso(),
+                "home_id": item.get("home_id"),
+                "room_id": item.get("room_id"),
+                "module_name": item.get("module_name", ""),
+                "fw_version": item.get("fw_version", ""),
+                "group_id": item.get("group_id"),
+            }
+        )
     global _last_discovery
-    _last_discovery = found
-    return found
+    _last_discovery = enriched
+    _touch_registry_from_discovery(enriched)
+    return enriched
 
 
 def agregar_luz(selector: str, nombre: str = "") -> dict:
@@ -258,25 +400,51 @@ def agregar_luz(selector: str, nombre: str = "") -> dict:
     if not ok:
         raise RuntimeError(reason)
     ref = _resolve_discovery_or_registered(selector) or {"ip": selector.strip(), "name": nombre.strip()}
-    ip = ref.get("ip", "").strip()
+    ip = str(ref.get("ip", "")).strip()
+    mac = _normalize_mac(ref.get("mac", ""))
     if not ip:
         raise ValueError("necesito una IP o una luz descubierta para agregar")
     try:
         state = _run(_fetch_state_async(ip))
     except Exception as e:
         raise RuntimeError(f"no pude hablar con la luz WiZ {ip}: {e}") from e
-    entry = _find_registered_by_ip(ip)
+    if not mac:
+        with contextlib.suppress(Exception):
+            cfg = _run(_fetch_config_async(ip))
+            mac = _normalize_mac(cfg.get("mac", ""))
+            ref = dict(ref)
+            ref.update(
+                {
+                    "home_id": cfg.get("homeId"),
+                    "room_id": cfg.get("roomId"),
+                    "module_name": cfg.get("moduleName", ""),
+                    "fw_version": cfg.get("fwVersion", ""),
+                    "group_id": cfg.get("groupId"),
+                }
+            )
+    entry = _find_registered_by_mac(mac) or _find_registered_by_ip(ip)
     if entry is None:
         entry = {
             "ip": ip,
-            "name": nombre.strip() or ref.get("name") or _friendly_name(ip),
+            "mac": mac,
+            "name": nombre.strip() or ref.get("name") or _friendly_name(ip, mac),
             "added_at": _now_iso(),
         }
         _state["lights"].append(entry)
-    elif nombre.strip():
-        entry["name"] = nombre.strip()
+    else:
+        if nombre.strip():
+            entry["name"] = nombre.strip()
+        if ip:
+            entry["ip"] = ip
+        if mac:
+            entry["mac"] = mac
     entry["last_seen"] = _now_iso()
     entry["last_state"] = state
+    entry["online"] = True
+    for key in ("home_id", "room_id", "module_name", "fw_version", "group_id"):
+        value = ref.get(key)
+        if value is not None and value != "":
+            entry[key] = value
     _save_state()
     return deepcopy(entry)
 
@@ -291,6 +459,23 @@ def renombrar_luz(selector: str, nombre_nuevo: str) -> dict:
     entry["name"] = nombre_nuevo.strip()
     _save_state()
     return deepcopy(entry)
+
+
+def eliminar_luz(selector: str) -> dict:
+    matched = _resolve_registered(selector)
+    if not matched:
+        raise ValueError("no encontré esa luz WiZ")
+    target = matched[0]
+    _state["lights"] = [
+        entry for entry in _state["lights"]
+        if entry is not target
+    ]
+    sync_selector = (_state["emotion_sync"].get("selector", "") or "").strip()
+    if sync_selector and _match_selector([target], sync_selector):
+        _state["emotion_sync"]["enabled"] = False
+        _state["emotion_sync"]["selector"] = ""
+    _save_state()
+    return deepcopy(target)
 
 
 def listar_luces() -> list[dict]:
@@ -504,17 +689,59 @@ def sincronizar_estado_si_activo(state_name: str):
         return
 
 
+def contar_luces() -> dict:
+    buscar_fallo = None
+    try:
+        descubiertas = buscar_luces()
+    except Exception as exc:
+        descubiertas = []
+        buscar_fallo = str(exc)
+    online_keys = {
+        f"mac:{item['mac']}" if item.get("mac") else f"ip:{item.get('ip', '')}"
+        for item in descubiertas
+    }
+    registradas = listar_luces()
+    online = 0
+    for entry in registradas:
+        key = f"mac:{entry['mac']}" if entry.get("mac") else f"ip:{entry.get('ip', '')}"
+        if key in online_keys:
+            online += 1
+    return {
+        "registered": len(registradas),
+        "online": online,
+        "offline": max(0, len(registradas) - online),
+        "discovered": len(descubiertas),
+        "discovery_error": buscar_fallo or "",
+    }
+
+
 def resumen_estado() -> str:
     luces = listar_luces()
     if not luces:
         return "no hay luces WiZ registradas"
-    nombres = ", ".join(f"{item['name']} ({item['ip']})" for item in luces)
+    stats = contar_luces()
+    partes = []
+    for item in luces:
+        detalle = f"{item['name']} ({item['ip']}"
+        if item.get("mac"):
+            detalle += f", mac {item['mac']}"
+        detalle += ")"
+        partes.append(detalle)
+    base = (
+        f"WiZ registradas: {stats['registered']}, online: {stats['online']}, offline: {stats['offline']}. "
+        + "; ".join(partes)
+    )
     if sync_activo():
         selector = _state["emotion_sync"].get("selector", "")
         if selector:
-            return f"WiZ registradas: {nombres}. Sync emocional activo para {selector}"
-        return f"WiZ registradas: {nombres}. Sync emocional activo para todas"
-    return f"WiZ registradas: {nombres}. Sync emocional apagado"
+            base += f". Sync emocional activo para {selector}"
+        else:
+            base += ". Sync emocional activo para todas"
+    else:
+        base += ". Sync emocional apagado"
+    if stats.get("discovery_error"):
+        base += f". No pude refrescar discovery ahora: {stats['discovery_error']}"
+    return base
 
 
 def estado_actual(selector: str = "") -> list[dict]:
@@ -523,5 +750,6 @@ def estado_actual(selector: str = "") -> list[dict]:
     for entry in entries:
         estado = _run(_fetch_state_async(entry["ip"]))
         estado["name"] = entry["name"]
+        estado["mac"] = entry.get("mac", "")
         resultados.append(estado)
     return resultados
