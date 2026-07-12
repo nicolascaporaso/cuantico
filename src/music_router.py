@@ -150,6 +150,14 @@ def pausar(backend: str | None = None) -> bool:
     return modulo.pausar()
 
 
+def pausar_para_conversacion(backend: str | None = None) -> bool:
+    _, modulo = _backend_module(backend) if backend else _backend_control()
+    handler = getattr(modulo, "pausar_para_conversacion", None)
+    if callable(handler):
+        return bool(handler())
+    return bool(modulo.pausar())
+
+
 def siguiente(backend: str | None = None) -> bool:
     _, modulo = _backend_module(backend) if backend else _backend_control()
     return modulo.siguiente()

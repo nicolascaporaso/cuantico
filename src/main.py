@@ -35,6 +35,7 @@ _force_new_conversation = False
 _button_state_lock = threading.RLock()
 _button_conversation_requested = False
 _button_conversation_active = False
+_button_pause_active = False
 
 
 class _RestartRequested(Exception):
@@ -505,11 +506,13 @@ def _limpiar_pendientes_musica():
 
 
 def _estado_control_reproduccion() -> tuple[str, dict]:
-    global _button_conversation_requested, _button_conversation_active
+    global _button_conversation_requested, _button_conversation_active, _button_pause_active
     activa, estado = music_router.estado_reproduccion()
     with _button_state_lock:
         if _button_conversation_requested or _button_conversation_active:
             return "CONVERSATION", estado
+        if _button_pause_active:
+            return "PAUSED", estado
     if activa:
         return "PLAYING", estado
     if estado.get("paused"):
@@ -517,13 +520,19 @@ def _estado_control_reproduccion() -> tuple[str, dict]:
     return "IDLE", estado
 
 
-def _marcar_conversacion_boton(requested: bool | None = None, active: bool | None = None):
-    global _button_conversation_requested, _button_conversation_active
+def _marcar_conversacion_boton(
+    requested: bool | None = None,
+    active: bool | None = None,
+    paused: bool | None = None,
+):
+    global _button_conversation_requested, _button_conversation_active, _button_pause_active
     with _button_state_lock:
         if requested is not None:
             _button_conversation_requested = requested
         if active is not None:
             _button_conversation_active = active
+        if paused is not None:
+            _button_pause_active = paused
 
 
 def _manejar_evento_boton(event_name: str, payload: dict | None = None):
@@ -534,30 +543,31 @@ def _manejar_evento_boton(event_name: str, payload: dict | None = None):
     if event_name == button_controller.BUTTON_SINGLE_CLICK:
         if estado_control == "PLAYING":
             ok = music_router.pausar()
-            _marcar_conversacion_boton(requested=False, active=False)
+            _marcar_conversacion_boton(requested=False, active=False, paused=ok)
             if ok:
-                micro.reanudar()
+                micro.suspender("button-paused")
             _debug_emit("BTN", "button-single-pause", {"ok": ok, "playback": estado})
         elif estado_control in {"PAUSED", "CONVERSATION"}:
-            _marcar_conversacion_boton(requested=False, active=False)
             ok = music_router.reanudar()
             if ok:
+                _marcar_conversacion_boton(requested=False, active=False, paused=False)
                 micro.suspender("music-playback")
+            else:
+                _marcar_conversacion_boton(requested=False, active=False, paused=True)
             _debug_emit("BTN", "button-single-resume", {"ok": ok, "playback": estado})
         return
 
     if event_name == button_controller.BUTTON_DOUBLE_CLICK:
         if estado_control in {"PLAYING", "PAUSED"}:
-            if estado_control == "PLAYING":
-                music_router.pausar()
-            _marcar_conversacion_boton(requested=True, active=False)
+            ok = True if estado_control == "PAUSED" else music_router.pausar_para_conversacion()
+            _marcar_conversacion_boton(requested=True, active=False, paused=True)
             micro.reanudar()
-            _debug_emit("BTN", "button-double-conversation", {"playback": estado})
+            _debug_emit("BTN", "button-double-conversation", {"ok": ok, "playback": estado})
         return
 
     if event_name == button_controller.BUTTON_TRIPLE_CLICK:
         if estado_control in {"PLAYING", "PAUSED", "CONVERSATION"}:
-            _marcar_conversacion_boton(requested=False, active=False)
+            _marcar_conversacion_boton(requested=False, active=False, paused=False)
             _limpiar_pendientes_musica()
             _cancelar_corte_musica_existente()
             ok = music_router.detener_todo()
@@ -628,6 +638,15 @@ def _sincronizar_microfono_con_musica(activa: bool, estado: dict | None = None):
 
 def _esperar_musica_activa() -> bool:
     activa, estado = music_router.estado_reproduccion()
+    with _button_state_lock:
+        pausa_boton = _button_pause_active
+        conversacion = _button_conversation_requested or _button_conversation_active
+    if pausa_boton and not activa and not conversacion:
+        if not micro.esta_suspendido():
+            mic_info = micro.suspender("button-paused")
+            _debug_emit("B", "button-pause-mic-suspended", {"music": estado, "micro": mic_info})
+        time.sleep(0.15)
+        return True
     if not activa:
         _sincronizar_microfono_con_musica(False, estado)
         return False
@@ -1503,7 +1522,7 @@ def _iniciar_conversacion_desde_boton() -> bool:
     with _button_state_lock:
         if not _button_conversation_requested:
             return False
-        _marcar_conversacion_boton(requested=False, active=True)
+        _marcar_conversacion_boton(requested=False, active=True, paused=True)
     _reconstruir_system_prompt()
     chat = _crear_chat_turno(_prompt_con_memoria(), TOOLS)
     luces.cambiar_estado("escuchando")
@@ -1515,7 +1534,13 @@ def _iniciar_conversacion_desde_boton() -> bool:
     try:
         _ejecutar_conversacion(texto_usuario, chat, origen="button")
     finally:
-        _marcar_conversacion_boton(active=False)
+        _marcar_conversacion_boton(active=False, paused=True)
+        try:
+            activa, _estado = music_router.estado_reproduccion()
+        except Exception:
+            activa = False
+        if not activa:
+            micro.suspender("button-paused")
         _debug_emit("BTN", "button-conversation-end", {})
     return True
 

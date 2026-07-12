@@ -18,6 +18,8 @@ _LOCAL_MPV_STDERR_PATH = Path(config.STATE_DIR) / "mpv-local.log"
 _mpv_process = None
 _mpv_route = None
 _socket_path = config.MPV_IPC_SOCKET_PATH
+_playlist_items = []
+_paused_snapshot = None
 
 
 def _debug_emit(msg: str, data: dict | None = None):
@@ -74,6 +76,7 @@ def resumen_estado() -> dict:
         "mpv_available": _command_exists(config.MPV_COMMAND),
         "mpv_running": _mpv_alive(),
         "socket_path": _socket_path,
+        "paused_snapshot": bool(_paused_snapshot),
     }
 
 
@@ -94,6 +97,19 @@ def _cleanup_route():
     if _mpv_route:
         altavoz.desactivar_salida_audio(_mpv_route)
     _mpv_route = None
+
+
+def _clone_items(items: list[dict]) -> list[dict]:
+    clonados = []
+    for item in items or []:
+        clonados.append(
+            {
+                "title": item.get("title", ""),
+                "webpage_url": item.get("webpage_url", ""),
+                "stream_url": item.get("stream_url", ""),
+            }
+        )
+    return clonados
 
 
 def _maybe_cleanup_dead_process():
@@ -247,7 +263,7 @@ def _asegurar_socket(timeout_seg: float = 8.0) -> bool:
     return _esperar_socket_mpv(timeout_seg=timeout_seg)
 
 
-def _iniciar_mpv(items: list[dict]):
+def _iniciar_mpv(items: list[dict], *, start_paused: bool = False):
     global _mpv_process, _mpv_route
     _maybe_cleanup_dead_process()
     if _mpv_alive():
@@ -288,6 +304,7 @@ def _iniciar_mpv(items: list[dict]):
         f"--audio-device=alsa/{salida['device']}",
         f"--input-ipc-server={_socket_path}",
         "--network-timeout=10",
+        *(["--pause=yes"] if start_paused else []),
         *[item["stream_url"] for item in items],
     ]
     _debug_emit(
@@ -418,9 +435,12 @@ def _ipc_command(command: list, *, retries: int = 8, retry_delay_seg: float = 0.
 
 
 def _cargar_playlist(items: list[dict]) -> bool:
+    global _playlist_items, _paused_snapshot
     if not items:
         return False
     _iniciar_mpv(items)
+    _playlist_items = _clone_items(items)
+    _paused_snapshot = None
     _debug_emit(
         "playlist-loaded",
         {
@@ -490,7 +510,49 @@ def reproducir_playlist(query: str) -> bool:
 
 
 def reanudar() -> bool:
+    global _paused_snapshot
     _maybe_cleanup_dead_process()
+    if _paused_snapshot and not _mpv_alive():
+        snapshot = dict(_paused_snapshot)
+        items = _clone_items(snapshot.get("items") or [])
+        index = max(0, int(snapshot.get("index", 0)))
+        position_sec = max(0.0, float(snapshot.get("position_sec", 0.0) or 0.0))
+        restantes = items[index:] if index < len(items) else items
+        if not restantes:
+            return False
+        try:
+            _iniciar_mpv(restantes, start_paused=True)
+        except Exception:
+            reconstruidos = []
+            for item in restantes:
+                if item.get("webpage_url"):
+                    reconstruidos.append(_preparar_item_rapido(item))
+                elif item.get("stream_url"):
+                    reconstruidos.append(dict(item))
+            if not reconstruidos:
+                raise
+            _iniciar_mpv(reconstruidos, start_paused=True)
+            restantes = reconstruidos
+        try:
+            if position_sec > 0.25:
+                _ipc_command(["seek", position_sec, "absolute+exact"])
+            _ipc_command(["set_property", "pause", False])
+        except Exception:
+            try:
+                _ipc_command(["set_property", "pause", False])
+            except Exception:
+                pass
+            raise
+        _playlist_items[:] = _clone_items(restantes)
+        _paused_snapshot = None
+        _debug_emit(
+            "mpv-resumed-from-snapshot",
+            {
+                "position_sec": round(position_sec, 3),
+                "remaining_count": len(restantes),
+            },
+        )
+        return True
     if not _mpv_alive():
         return False
     _ipc_command(["set_property", "pause", False])
@@ -503,6 +565,49 @@ def pausar() -> bool:
         return False
     _ipc_command(["set_property", "pause", True])
     return True
+
+
+def pausar_para_conversacion() -> bool:
+    global _paused_snapshot
+    _maybe_cleanup_dead_process()
+    if _paused_snapshot and not _mpv_alive():
+        return True
+    if not _mpv_alive():
+        return False
+    try:
+        playlist_pos = _ipc_command(["get_property", "playlist-pos"])
+    except Exception:
+        playlist_pos = 0
+    try:
+        position_sec = _ipc_command(["get_property", "time-pos"])
+    except Exception:
+        position_sec = 0.0
+    try:
+        _ipc_command(["set_property", "pause", True])
+    except Exception:
+        pass
+    items = _clone_items(_playlist_items)
+    if not items:
+        return False
+    index = max(0, min(len(items) - 1, int(playlist_pos or 0)))
+    _paused_snapshot = {
+        "items": items,
+        "index": index,
+        "position_sec": max(0.0, float(position_sec or 0.0)),
+        "reason": "conversation",
+        "ts": time.time(),
+    }
+    ok = _detener_mpv(clear_snapshot=False)
+    _debug_emit(
+        "mpv-paused-for-conversation",
+        {
+            "ok": ok,
+            "index": index,
+            "position_sec": round(float(position_sec or 0.0), 3),
+            "playlist_count": len(items),
+        },
+    )
+    return ok
 
 
 def siguiente() -> bool:
@@ -536,6 +641,15 @@ def volumen(delta: int) -> bool:
 
 def estado_reproduccion() -> dict:
     _maybe_cleanup_dead_process()
+    if _paused_snapshot and not _mpv_alive():
+        return {
+            "backend": "youtube",
+            "active": False,
+            "paused": True,
+            "idle_active": False,
+            "reason": "paused-snapshot",
+            "position_sec": round(float(_paused_snapshot.get("position_sec", 0.0) or 0.0), 3),
+        }
     if not _mpv_alive():
         return {
             "backend": "youtube",
@@ -568,18 +682,20 @@ def hay_reproduccion_activa() -> bool:
     return bool(estado_reproduccion().get("active"))
 
 
-def detener() -> bool:
+def _detener_mpv(*, clear_snapshot: bool) -> bool:
+    global _mpv_process, _paused_snapshot, _playlist_items
     global _mpv_process
     _maybe_cleanup_dead_process()
-    if not _mpv_alive():
-        return False
-    try:
-        _ipc_command(["quit"])
-    except Exception:
+    detenido = False
+    if _mpv_alive():
         try:
-            _mpv_process.terminate()
+            _ipc_command(["quit"])
         except Exception:
-            pass
+            try:
+                _mpv_process.terminate()
+            except Exception:
+                pass
+        detenido = True
     _mpv_process = None
     _cleanup_route()
     if _socket_path and os.path.exists(_socket_path):
@@ -587,4 +703,11 @@ def detener() -> bool:
             os.unlink(_socket_path)
         except OSError:
             pass
-    return True
+    if clear_snapshot:
+        _paused_snapshot = None
+        _playlist_items = []
+    return detenido or bool(clear_snapshot)
+
+
+def detener() -> bool:
+    return _detener_mpv(clear_snapshot=True)

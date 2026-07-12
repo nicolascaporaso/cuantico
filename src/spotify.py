@@ -178,6 +178,10 @@ def detener() -> bool:
     return pausar()
 
 
+def pausar_para_conversacion() -> bool:
+    return pausar()
+
+
 def reproducir(query=None):
     ok, motivo = disponible_para_reproducir()
     if not ok:
