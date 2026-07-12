@@ -18,6 +18,10 @@ pixels = neopixel.NeoPixel(PIN_LEDS, NUM_PIXELS, brightness=BRIGHTNESS, auto_wri
 
 _estado = "esperando"
 _hilo_luces = None
+_animaciones_pendientes = []
+_animaciones_lock = threading.Lock()
+_OUTER_BUTTON_PIXELS = [0, 1, 2, 3, 7, 11, 15, 14, 13, 12, 8, 4]
+_INNER_BUTTON_PIXELS = [5, 6, 10, 9]
 
 
 def _clamp_channel(value: float) -> int:
@@ -30,6 +34,14 @@ def _scale_color(color, factor: float):
 
 def _fill(color):
     pixels.fill(tuple(_clamp_channel(channel) for channel in color))
+    pixels.show()
+
+
+def _show_partial(indices, color):
+    pixels.fill((0, 0, 0))
+    rgb = tuple(_clamp_channel(channel) for channel in color)
+    for idx in indices:
+        pixels[idx] = rgb
     pixels.show()
 
 
@@ -124,10 +136,53 @@ def cambiar_estado(nuevo_estado):
     wiz_controller.sincronizar_estado_si_activo(_estado)
 
 
+def reproducir_animacion_boton(color: tuple[int, int, int], hold_ms: int = 120):
+    with _animaciones_lock:
+        _animaciones_pendientes.append(
+            {
+                "color": tuple(color),
+                "hold_ms": int(hold_ms),
+            }
+        )
+
+
+def _tomar_animacion_pendiente():
+    with _animaciones_lock:
+        if not _animaciones_pendientes:
+            return None
+        return _animaciones_pendientes.pop(0)
+
+
+def _animar_feedback_boton(animacion: dict):
+    color = tuple(animacion.get("color", (255, 255, 255)))
+    hold_s = max(0.02, animacion.get("hold_ms", 120) / 1000.0)
+    _show_partial(_OUTER_BUTTON_PIXELS, color)
+    time.sleep(0.04)
+    pixels.fill((0, 0, 0))
+    for idx in _OUTER_BUTTON_PIXELS:
+        pixels[idx] = tuple(_clamp_channel(channel) for channel in color)
+    for idx in _INNER_BUTTON_PIXELS:
+        pixels[idx] = tuple(_clamp_channel(channel) for channel in color)
+    pixels.show()
+    time.sleep(hold_s)
+    for step in range(6, -1, -1):
+        factor = step / 6.0
+        pixels.fill((0, 0, 0))
+        scaled = _scale_color(color, factor)
+        for idx in _OUTER_BUTTON_PIXELS + _INNER_BUTTON_PIXELS:
+            pixels[idx] = scaled
+        pixels.show()
+        time.sleep(0.02)
+
+
 def _animar():
     global _estado
     while True:
         try:
+            animacion = _tomar_animacion_pendiente()
+            if animacion:
+                _animar_feedback_boton(animacion)
+                continue
             if _render_state(_estado):
                 break
         except Exception:

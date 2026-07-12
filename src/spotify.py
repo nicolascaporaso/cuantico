@@ -160,6 +160,24 @@ def hay_reproduccion_activa() -> bool:
     return bool(estado_reproduccion().get("active"))
 
 
+def reanudar() -> bool:
+    ok, motivo = disponible_para_reproducir()
+    if not ok:
+        print(f"   ⚠️ {motivo}")
+        return False
+    try:
+        _sp.start_playback(**_resolver_kwargs_device_id())
+        return True
+    except Exception as e:
+        print(f"⚠️ Spotify error reanudar: {e}")
+        return False
+
+
+def detener() -> bool:
+    # Spotify no tiene "stop" real vía Web API; usar pausa evita que siga sonando.
+    return pausar()
+
+
 def reproducir(query=None):
     ok, motivo = disponible_para_reproducir()
     if not ok:

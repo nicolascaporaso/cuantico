@@ -19,6 +19,7 @@ import music_router
 import spotify
 import timers
 import wiz_controller
+import button_controller
 import calendario
 import youtube_stats
 import llamada
@@ -31,6 +32,9 @@ USER_FULL_NAME = config.USER_FULL_NAME
 ACTIVE_PROFILE_NAME = profile.get_active_profile_name()
 _accion_sistema_pendiente: str | None = None
 _force_new_conversation = False
+_button_state_lock = threading.RLock()
+_button_conversation_requested = False
+_button_conversation_active = False
 
 
 class _RestartRequested(Exception):
@@ -491,6 +495,75 @@ def _cancelar_corte_musica_existente():
         _music_cut_task_id = None
     else:
         timers.cancelar(_MUSIC_CUT_LABEL)
+
+
+def _limpiar_pendientes_musica():
+    global _comentario_musica_pendiente, _silenciar_tts_musica_pendiente
+    _pendientes_musica.clear()
+    _comentario_musica_pendiente = None
+    _silenciar_tts_musica_pendiente = False
+
+
+def _estado_control_reproduccion() -> tuple[str, dict]:
+    global _button_conversation_requested, _button_conversation_active
+    activa, estado = music_router.estado_reproduccion()
+    with _button_state_lock:
+        if _button_conversation_requested or _button_conversation_active:
+            return "CONVERSATION", estado
+    if activa:
+        return "PLAYING", estado
+    if estado.get("paused"):
+        return "PAUSED", estado
+    return "IDLE", estado
+
+
+def _marcar_conversacion_boton(requested: bool | None = None, active: bool | None = None):
+    global _button_conversation_requested, _button_conversation_active
+    with _button_state_lock:
+        if requested is not None:
+            _button_conversation_requested = requested
+        if active is not None:
+            _button_conversation_active = active
+
+
+def _manejar_evento_boton(event_name: str, payload: dict | None = None):
+    payload = payload or {}
+    estado_control, estado = _estado_control_reproduccion()
+    _debug_emit("BTN", "button-event", {"event": event_name, "state": estado_control, "playback": estado, "payload": payload})
+
+    if event_name == button_controller.BUTTON_SINGLE_CLICK:
+        if estado_control == "PLAYING":
+            ok = music_router.pausar()
+            _marcar_conversacion_boton(requested=False, active=False)
+            if ok:
+                micro.reanudar()
+            _debug_emit("BTN", "button-single-pause", {"ok": ok, "playback": estado})
+        elif estado_control in {"PAUSED", "CONVERSATION"}:
+            _marcar_conversacion_boton(requested=False, active=False)
+            ok = music_router.reanudar()
+            if ok:
+                micro.suspender("music-playback")
+            _debug_emit("BTN", "button-single-resume", {"ok": ok, "playback": estado})
+        return
+
+    if event_name == button_controller.BUTTON_DOUBLE_CLICK:
+        if estado_control in {"PLAYING", "PAUSED"}:
+            if estado_control == "PLAYING":
+                music_router.pausar()
+            _marcar_conversacion_boton(requested=True, active=False)
+            micro.reanudar()
+            _debug_emit("BTN", "button-double-conversation", {"playback": estado})
+        return
+
+    if event_name == button_controller.BUTTON_TRIPLE_CLICK:
+        if estado_control in {"PLAYING", "PAUSED", "CONVERSATION"}:
+            _marcar_conversacion_boton(requested=False, active=False)
+            _limpiar_pendientes_musica()
+            _cancelar_corte_musica_existente()
+            ok = music_router.detener_todo()
+            micro.reanudar()
+            _debug_emit("BTN", "button-triple-stop", {"ok": ok, "playback": estado})
+        return
 
 
 def _texto_evento_programado(evento: dict) -> tuple[str, str]:
@@ -1327,6 +1400,126 @@ def _crear_chat_turno(system_prompt, funciones):
     )
 
 
+def _ejecutar_conversacion(texto_usuario: str | None, chat, origen: str = "radar"):
+    global _modo_llamada_pendiente, _force_new_conversation
+    en_conversacion = True
+    while en_conversacion:
+        if not texto_usuario or texto_usuario.strip() == "":
+            print("☁️  No he entendido nada.")
+            _debug_emit("B", "empty-user-text", {"origin": origen})
+            try:
+                texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
+            except micro.MicrofonoSuspendido:
+                _debug_emit("B", "followup-empty-suspended-by-music", {"origin": origen})
+                en_conversacion = False
+                continue
+            if not texto_usuario:
+                _debug_emit("B", "followup-timeout-after-empty", {"origin": origen})
+                en_conversacion = False
+            continue
+
+        print(f"\n👤 {USER_SHORT_NAME}: {texto_usuario}")
+
+        if any(w in texto_usuario.lower() for w in ['apágate', 'apagate']):
+            despedida = "¡Venga ya! Me voy a por una chimichanga. ¡No me busques, pringao!"
+            print(f"🤖 Cuántico: {despedida}")
+            _hablar(despedida, "enfadado")
+            raise KeyboardInterrupt
+
+        if any(w in texto_usuario.lower() for w in ['adiós', 'adios', 'hasta luego', 'chao']):
+            despedida = "Piérdete, chaval. Ya sabes dónde encontrarme."
+            print(f"🤖 Cuántico: {despedida}")
+            _hablar(despedida, "sarcasmo")
+            en_conversacion = False
+            continue
+
+        luces.cambiar_estado("pensando")
+        print("🤖 Cuántico está procesando...")
+        _debug_emit("C", "assistant-processing", {"text_preview": texto_usuario[:120], "origin": origen})
+        try:
+            response = chat.send_message(texto_usuario)
+            texto_respuesta = (response.text or "").strip()
+            silenciar_tts_musica = _tomar_silencio_tts_musica()
+            comentario_musica = _tomar_comentario_musica()
+            if comentario_musica:
+                texto_respuesta = (texto_respuesta + " " + comentario_musica).strip() if texto_respuesta else comentario_musica
+                _debug_emit("C", "music-commentary-appended", {"text_preview": comentario_musica[:160], "origin": origen})
+            if silenciar_tts_musica and _hay_reemplazo_musica_pendiente():
+                _debug_emit("C", "music-turn-suppress-tts", {"text_preview": texto_respuesta[:160], "origin": origen})
+                texto_respuesta = ""
+            _debug_emit("C", "assistant-response-ready", {"has_text": bool(texto_respuesta), "text_preview": texto_respuesta[:160], "origin": origen})
+
+            if texto_respuesta:
+                if _hay_reemplazo_musica_pendiente():
+                    liberado = music_router.detener_todo()
+                    _debug_emit("B", "music-output-released-for-tts", {"released": liberado, "origin": origen})
+                emocion_ia = profile.detectar_emocion(texto_respuesta)
+                print(f"🤖 Cuántico: {texto_respuesta}")
+                _debug_emit("C", "tts-start", {"emotion": emocion_ia, "origin": origen})
+                _hablar(texto_respuesta, emocion_ia)
+                luces.cambiar_estado(emocion_ia)
+                _debug_emit("C", "tts-finished", {"emotion": emocion_ia, "origin": origen})
+
+            musica_ejecutada = _ejecutar_pendientes_musica()
+
+            if _modo_llamada_pendiente:
+                objetivo = _modo_llamada_pendiente
+                _modo_llamada_pendiente = None
+                _debug_emit("D", "call-mode-enter", {"goal_preview": objetivo[:160], "origin": origen})
+                llamada.ejecutar(objetivo, _hablar, _hablar_stream)
+                en_conversacion = False
+                _debug_emit("D", "call-mode-exit", {"origin": origen})
+                continue
+
+            if musica_ejecutada:
+                _debug_emit("B", "music-turn-skip-followup", {"count": musica_ejecutada, "origin": origen})
+                en_conversacion = False
+                continue
+
+            if _ejecutar_accion_sistema_pendiente():
+                en_conversacion = False
+                continue
+            if _force_new_conversation:
+                _debug_emit("B", "conversation-reset-requested", {"profile": profile.get_active_profile_name(), "origin": origen})
+                _force_new_conversation = False
+                en_conversacion = False
+                continue
+
+        except Exception as e:
+            print(f"⚠️ Error en OpenRouter: {e}")
+            _debug_emit("C", "conversation-exception", {"error": str(e), "traceback": traceback.format_exc(), "origin": origen})
+            _hablar(f"Se me ha frito una neurona, {USER_SHORT_NAME}. Repite eso.", "enfadado")
+
+        try:
+            texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
+        except micro.MicrofonoSuspendido:
+            _debug_emit("B", "followup-suspended-by-music", {"origin": origen})
+            en_conversacion = False
+            continue
+        _debug_emit("B", "followup-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120], "origin": origen})
+
+
+def _iniciar_conversacion_desde_boton() -> bool:
+    with _button_state_lock:
+        if not _button_conversation_requested:
+            return False
+        _marcar_conversacion_boton(requested=False, active=True)
+    _reconstruir_system_prompt()
+    chat = _crear_chat_turno(_prompt_con_memoria(), TOOLS)
+    luces.cambiar_estado("escuchando")
+    _debug_emit("BTN", "button-conversation-start", {})
+    try:
+        texto_usuario = micro.escuchar_seguimiento(timeout_ms=10000)
+    except micro.MicrofonoSuspendido:
+        texto_usuario = None
+    try:
+        _ejecutar_conversacion(texto_usuario, chat, origen="button")
+    finally:
+        _marcar_conversacion_boton(active=False)
+        _debug_emit("BTN", "button-conversation-end", {})
+    return True
+
+
 print("🌐 Web search + function calling activado vía OpenRouter.")
 _debug_emit("A", "openrouter-ready", {"model": config.OPENROUTER_MODEL, "profile": ACTIVE_PROFILE_NAME})
 
@@ -1343,12 +1536,30 @@ _debug_emit("B", "startup-sound-finished")
 
 micro.inicializar()
 _debug_emit("B", "micro-inicializado")
+button_ready = button_controller.inicializar()
+if button_ready:
+    button_controller.registrar_callback(_manejar_evento_boton)
+_debug_emit(
+    "BTN",
+    "button-controller-init",
+    {
+        "enabled": config.BUTTON_CONTROLLER_ENABLED,
+        "ready": button_ready,
+        "pin_bcm": config.BUTTON_GPIO_BCM,
+        "debounce_ms": config.BUTTON_DEBOUNCE_MS,
+        "group_window_ms": config.BUTTON_GROUP_WINDOW_MS,
+    },
+)
 
 _restart_requested = False
 
 try:
     while True:
+        if _iniciar_conversacion_desde_boton():
+            continue
         if _esperar_musica_activa():
+            continue
+        if _iniciar_conversacion_desde_boton():
             continue
         # --- MODO RADAR: espera wake word ---
         luces.cambiar_estado("esperando")
@@ -1365,110 +1576,7 @@ try:
         # (y nombres de luces, etc.) queden actualizados sin reiniciar el proceso.
         _reconstruir_system_prompt()
         chat = _crear_chat_turno(_prompt_con_memoria(), TOOLS)
-
-        # --- MODO CONVERSACIÓN ---
-        en_conversacion = True
-        while en_conversacion:
-            if not texto_usuario or texto_usuario.strip() == "":
-                print("☁️  No he entendido nada.")
-                _debug_emit("B", "empty-user-text")
-                try:
-                    texto_usuario = micro.escuchar_seguimiento(timeout_ms=5000)
-                except micro.MicrofonoSuspendido:
-                    _debug_emit("B", "followup-empty-suspended-by-music")
-                    en_conversacion = False
-                    continue
-                if not texto_usuario:
-                    _debug_emit("B", "followup-timeout-after-empty")
-                    en_conversacion = False
-                continue
-
-            print(f"\n👤 {USER_SHORT_NAME}: {texto_usuario}")
-
-            if any(w in texto_usuario.lower() for w in ['apágate', 'apagate']):
-                despedida = "¡Venga ya! Me voy a por una chimichanga. ¡No me busques, pringao!"
-                print(f"🤖 Cuántico: {despedida}")
-                _hablar(despedida, "enfadado")
-                raise KeyboardInterrupt
-
-            if any(w in texto_usuario.lower() for w in ['adiós', 'adios', 'hasta luego', 'chao']):
-                despedida = "Piérdete, chaval. Ya sabes dónde encontrarme."
-                print(f"🤖 Cuántico: {despedida}")
-                _hablar(despedida, "sarcasmo")
-                en_conversacion = False
-                continue
-
-            luces.cambiar_estado("pensando")
-            print("🤖 Cuántico está procesando...")
-            _debug_emit("C", "assistant-processing", {"text_preview": texto_usuario[:120]})
-            try:
-                # El adaptador de OpenRouter resuelve las tool-calls locales y la búsqueda
-                # web antes de devolver el texto final. Sin streaming aquí para que el TTS
-                # no se solape con tool-calls intermedias.
-                response = chat.send_message(texto_usuario)
-                texto_respuesta = (response.text or "").strip()
-                silenciar_tts_musica = _tomar_silencio_tts_musica()
-                comentario_musica = _tomar_comentario_musica()
-                if comentario_musica:
-                    texto_respuesta = (texto_respuesta + " " + comentario_musica).strip() if texto_respuesta else comentario_musica
-                    _debug_emit("C", "music-commentary-appended", {"text_preview": comentario_musica[:160]})
-                if silenciar_tts_musica and _hay_reemplazo_musica_pendiente():
-                    _debug_emit("C", "music-turn-suppress-tts", {"text_preview": texto_respuesta[:160]})
-                    texto_respuesta = ""
-                _debug_emit("C", "assistant-response-ready", {"has_text": bool(texto_respuesta), "text_preview": texto_respuesta[:160]})
-
-                if texto_respuesta:
-                    if _hay_reemplazo_musica_pendiente():
-                        liberado = music_router.detener_todo()
-                        _debug_emit("B", "music-output-released-for-tts", {"released": liberado})
-                    emocion_ia = profile.detectar_emocion(texto_respuesta)
-                    print(f"🤖 Cuántico: {texto_respuesta}")
-                    _debug_emit("C", "tts-start", {"emotion": emocion_ia})
-                    _hablar(texto_respuesta, emocion_ia)
-                    luces.cambiar_estado(emocion_ia)
-                    _debug_emit("C", "tts-finished", {"emotion": emocion_ia})
-
-                # Ahora que Cuántico ha terminado de hablar, arrancamos la música
-                musica_ejecutada = _ejecutar_pendientes_musica()
-
-                # Si en este turno se activó el modo llamada, entramos ahora que ya habló
-                if _modo_llamada_pendiente:
-                    objetivo = _modo_llamada_pendiente
-                    _modo_llamada_pendiente = None
-                    _debug_emit("D", "call-mode-enter", {"goal_preview": objetivo[:160]})
-                    llamada.ejecutar(objetivo, _hablar, _hablar_stream)
-                    # Al terminar la llamada, volvemos al modo radar (wake word)
-                    en_conversacion = False
-                    _debug_emit("D", "call-mode-exit")
-                    continue
-
-                if musica_ejecutada:
-                    _debug_emit("B", "music-turn-skip-followup", {"count": musica_ejecutada})
-                    en_conversacion = False
-                    continue
-
-                if _ejecutar_accion_sistema_pendiente():
-                    en_conversacion = False
-                    continue
-                if _force_new_conversation:
-                    _debug_emit("B", "conversation-reset-requested", {"profile": profile.get_active_profile_name()})
-                    _force_new_conversation = False
-                    en_conversacion = False
-                    continue
-
-            except Exception as e:
-                print(f"⚠️ Error en OpenRouter: {e}")
-                _debug_emit("C", "conversation-exception", {"error": str(e), "traceback": traceback.format_exc()})
-                _hablar(f"Se me ha frito una neurona, {USER_SHORT_NAME}. Repite eso.", "enfadado")
-
-            # Seguimos escuchando sin wake word
-            try:
-                texto_usuario = micro.escuchar_seguimiento(timeout_ms=8000)
-            except micro.MicrofonoSuspendido:
-                _debug_emit("B", "followup-suspended-by-music")
-                en_conversacion = False
-                continue
-            _debug_emit("B", "followup-result", {"has_text": bool(texto_usuario), "text_preview": (texto_usuario or "")[:120]})
+        _ejecutar_conversacion(texto_usuario, chat, origen="radar")
 
 except KeyboardInterrupt:
     print("\n🛑 Desconexión manual detectada.")
@@ -1480,6 +1588,7 @@ finally:
     _debug_emit("A", "finally-start")
     timers.cerrar()
     music_router.detener_todo()
+    button_controller.cerrar()
     micro.cerrar()
     luces.apagar_reactor()
     time.sleep(0.5)
