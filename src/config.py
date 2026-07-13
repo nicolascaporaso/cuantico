@@ -57,6 +57,11 @@ BUTTON_CONTROLLER_ENABLED = _opt_bool("BUTTON_CONTROLLER_ENABLED", True)
 BUTTON_GPIO_BCM = int(_opt("BUTTON_GPIO_BCM", "17"))
 BUTTON_DEBOUNCE_MS = max(1, int(_opt("BUTTON_DEBOUNCE_MS", "50")))
 BUTTON_GROUP_WINDOW_MS = max(100, int(_opt("BUTTON_GROUP_WINDOW_MS", "450")))
+TV_CLIENT_NAME = _opt("TV_CLIENT_NAME", "Cuantico")
+TV_DISCOVERY_TIMEOUT_S = max(1.0, float(_opt("TV_DISCOVERY_TIMEOUT_S", "4")))
+TV_CONNECT_TIMEOUT_S = max(1.0, float(_opt("TV_CONNECT_TIMEOUT_S", "5")))
+TV_DISCOVERY_SCAN_SUBNET = _opt_bool("TV_DISCOVERY_SCAN_SUBNET", True)
+TV_DISCOVERY_HOSTS = _opt("TV_DISCOVERY_HOSTS")
 
 # TTS
 ELEVENLABS_API_KEY = _req("ELEVENLABS_API_KEY")
@@ -96,6 +101,7 @@ YOUTUBE_CHANNEL_ID = _opt("YOUTUBE_CHANNEL_ID")
 # Directorio de estado persistente (timers, tokens, etc.)
 STATE_DIR = str(_RAIZ / "state")
 Path(STATE_DIR).mkdir(exist_ok=True)
+TV_STATE_PATH = _ruta("TV_STATE_PATH", "state/tvs.json")
 
 _TZINFO = ZoneInfo(CUANTICO_TIMEZONE)
 

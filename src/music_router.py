@@ -44,7 +44,11 @@ def _save_state(data: dict):
 
 
 def inicializar():
-    spotify.inicializar()
+    try:
+        spotify.inicializar(origen="startup")
+    except Exception as e:
+        print(f"[Spotify] Error durante la inicialización: {e}")
+        print("[Spotify] Spotify deshabilitado. El asistente continuará sin este servicio.")
     music_youtube.inicializar()
     if not _STATE_PATH.exists():
         backend = _sanitize_backend(None)

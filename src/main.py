@@ -19,6 +19,7 @@ import music_router
 import spotify
 import timers
 import wiz_controller
+from devices import tv as tv_devices
 import button_controller
 import calendario
 import youtube_stats
@@ -417,6 +418,183 @@ def estado_luces_wiz(luz: str = "") -> str:
             detalle = "apagada"
         partes.append(f"{estado['name']} ({estado['ip']}): {detalle}")
     return "; ".join(partes)
+
+
+def _tv_result_text(resultado, ok_default: str = "ok") -> str:
+    if resultado is None:
+        return "fallo: sin respuesta del controlador de TV"
+    if getattr(resultado, "ok", False):
+        return resultado.message or ok_default
+    return f"fallo: {resultado.message or 'error desconocido'}"
+
+
+def buscar_tvs() -> str:
+    """Busca televisores compatibles en la red local. Úsala cuando nico pida escanear, descubrir o buscar TVs Samsung/Tizen nuevas."""
+    resultado = tv_devices.discover()
+    if not resultado.ok:
+        return f"{_tv_result_text(resultado)}. Si ya sabés la IP, probá vincularla directo."
+    devices = resultado.data.get("devices") or []
+    return "; ".join(
+        f"{item.get('name') or 'TV'} ({item.get('brand')}, {item.get('host')})"
+        + (f", modelo {item.get('model')}" if item.get("model") else "")
+        + (f", mac {item.get('mac')}" if item.get("mac") else "")
+        for item in devices
+    ) or "ok: no encontré TVs nuevas"
+
+
+def vincular_tv(selector: str, nombre: str = "") -> str:
+    """Vincula un televisor descubierto para reutilizarlo después y guardar su token. Úsala cuando nico diga que agregues, registres o vincules un TV.
+
+    Args:
+        selector: Nombre, IP o MAC del TV descubierto.
+        nombre: Nombre amigable opcional. Ej: 'Tele del living'.
+    """
+    resultado = tv_devices.bind_device(selector, nombre)
+    if not resultado.ok:
+        return _tv_result_text(resultado)
+    device = (resultado.data or {}).get("device") or {}
+    return f"ok: TV vinculado como {device.get('name') or selector} ({device.get('host', '')})"
+
+
+def listar_tvs() -> str:
+    """Lista los TVs registrados y cuántos aparecen online. Úsala cuando nico pregunte qué televisor tiene, cuántos hay o cuál está disponible."""
+    resultado = tv_devices.list_devices(refresh=False)
+    if not resultado.ok:
+        return _tv_result_text(resultado)
+    devices = resultado.data.get("devices") or []
+    if not devices:
+        return "no tengo TVs registrados todavía"
+    return "; ".join(
+        f"{item.get('name') or 'TV'} ({item.get('brand')}, {item.get('host')})"
+        + (" online" if item.get("connected") else " offline")
+        + (" por defecto" if item.get("device_id") == resultado.data.get("default_device_id") else "")
+        for item in devices
+    )
+
+
+def olvidar_tv(selector: str) -> str:
+    """Elimina un televisor del registro y borra el vínculo guardado. Úsala cuando nico pida quitar, borrar u olvidar un TV viejo."""
+    return _tv_result_text(tv_devices.forget_device(selector))
+
+
+def estado_tv(tv: str = "") -> str:
+    """Consulta el estado de un televisor registrado. Úsala cuando nico pregunte si el TV está online, cuál es o cómo quedó.
+
+    Args:
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para usar el TV por defecto.
+    """
+    resultado = tv_devices.get_status(tv)
+    if not resultado.ok:
+        return _tv_result_text(resultado)
+    device = (resultado.data or {}).get("device") or {}
+    return (
+        f"TV {device.get('name') or device.get('host')}: online. "
+        f"IP {device.get('host', '')}. "
+        f"Modelo {device.get('model') or 'desconocido'}."
+    )
+
+
+def encender_tv(tv: str = "") -> str:
+    """Enciende un televisor registrado. Úsala cuando nico pida prender el tele, la tele del living o el Samsung.
+
+    Args:
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    return _tv_result_text(tv_devices.power_on(tv))
+
+
+def apagar_tv(tv: str = "") -> str:
+    """Apaga un televisor registrado.
+
+    Args:
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    return _tv_result_text(tv_devices.power_off(tv))
+
+
+def subir_volumen_tv(tv: str = "") -> str:
+    """Sube el volumen del televisor registrado."""
+    return _tv_result_text(tv_devices.volume_up(tv))
+
+
+def bajar_volumen_tv(tv: str = "") -> str:
+    """Baja el volumen del televisor registrado."""
+    return _tv_result_text(tv_devices.volume_down(tv))
+
+
+def fijar_volumen_tv(nivel: int, tv: str = "") -> str:
+    """Intenta fijar el volumen del TV en un valor concreto.
+
+    Args:
+        nivel: Volumen objetivo de 0 a 100.
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    return _tv_result_text(tv_devices.set_volume(nivel, tv))
+
+
+def silenciar_tv(tv: str = "") -> str:
+    """Activa mute en el televisor registrado."""
+    return _tv_result_text(tv_devices.mute(tv))
+
+
+def activar_sonido_tv(tv: str = "") -> str:
+    """Quita mute del televisor registrado."""
+    return _tv_result_text(tv_devices.unmute(tv))
+
+
+def abrir_app_tv(app: str, tv: str = "") -> str:
+    """Abre una app en el TV. Usa nombres simples como youtube, netflix o disney+.
+
+    Args:
+        app: Nombre lógico de la app.
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    return _tv_result_text(tv_devices.launch_app(app, tv))
+
+
+def cambiar_entrada_tv(entrada: str, tv: str = "") -> str:
+    """Cambia la entrada del TV. Usa valores como 'hdmi 1' o 'hdmi 2'.
+
+    Args:
+        entrada: Entrada o source del TV.
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    return _tv_result_text(tv_devices.send_key(entrada, tv))
+
+
+def ir_home_tv(tv: str = "") -> str:
+    """Lleva el TV a Home."""
+    return _tv_result_text(tv_devices.send_key("home", tv))
+
+
+def atras_tv(tv: str = "") -> str:
+    """Envía la tecla atrás/return al TV."""
+    return _tv_result_text(tv_devices.send_key("atras", tv))
+
+
+def aceptar_tv(tv: str = "") -> str:
+    """Envía OK/Enter al TV."""
+    return _tv_result_text(tv_devices.send_key("ok", tv))
+
+
+def mover_tv(direccion: str, tv: str = "") -> str:
+    """Mueve el foco del TV con flechas.
+
+    Args:
+        direccion: arriba, abajo, izquierda o derecha.
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    return _tv_result_text(tv_devices.send_key(direccion, tv))
+
+
+def enviar_tecla_tv(key: str, tv: str = "") -> str:
+    """Envía una tecla raw al TV como fallback avanzado. Ejemplos: KEY_HOME, KEY_HDMI1, KEY_MUTE.
+
+    Args:
+        key: Código raw o alias conocido de tecla Samsung.
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    return _tv_result_text(tv_devices.send_key(key, tv))
 
 # Cola de acciones de música: se encolan durante la tool-call y se ejecutan
 # DESPUÉS del TTS para que el comentario burlón no se solape con la canción.
@@ -1508,6 +1686,11 @@ TOOLS = [
     fijar_brillo_luces_wiz, ajustar_brillo_luces_wiz, poner_luz_lectura_wiz,
     parpadear_luces_wiz, efecto_luces_wiz, copiar_emocion_a_luz_wiz,
     desactivar_copia_emocion_wiz, estado_luces_wiz,
+    buscar_tvs, vincular_tv, listar_tvs, olvidar_tv, estado_tv,
+    encender_tv, apagar_tv, subir_volumen_tv, bajar_volumen_tv,
+    fijar_volumen_tv, silenciar_tv, activar_sonido_tv, abrir_app_tv,
+    cambiar_entrada_tv, ir_home_tv, atras_tv, aceptar_tv, mover_tv,
+    enviar_tecla_tv,
     apagar_cuantico, reiniciar_cuantico,
     reproducir_musica, poner_playlist, reanudar_musica, pausar_musica,
     siguiente_cancion, cancion_anterior, cambiar_volumen,
@@ -1539,6 +1722,8 @@ govee.inicializar()
 _debug_emit("A", "govee-inicializado")
 wiz_controller.inicializar()
 _debug_emit("A", "wiz-inicializado")
+tv_devices.inicializar()
+_debug_emit("A", "tv-inicializado")
 music_router.inicializar()
 _debug_emit("A", "music-router-inicializado", {"backend": music_router.backend_actual()})
 timers.inicializar(_callback_timer)
@@ -1561,6 +1746,10 @@ def _reconstruir_system_prompt():
     _luces_wiz = wiz_controller.nombres_luces()
     if _luces_wiz:
         SYSTEM_PROMPT += f"\n\nLUCES WIZ REGISTRADAS: {', '.join(_luces_wiz)}. Cuando nico mencione WiZ, dormitorio, velador u otras luces WiZ registradas, usa las tools específicas de WiZ."
+    _tv_result = tv_devices.list_devices()
+    _tvs = [item.get("name") or item.get("host") for item in (_tv_result.data.get("devices") if _tv_result.ok else [])]
+    if _tvs:
+        SYSTEM_PROMPT += f"\n\nTVS REGISTRADOS: {', '.join(_tvs)}. Para prender, apagar, abrir apps o cambiar entradas del tele, usa las tools de TV; nunca asumas lógica específica de marca."
 
     disponibles = ", ".join(profile.list_profiles())
     SYSTEM_PROMPT += f"\n\nPERSONALIDADES: disponibles {disponibles}. Para cambiar de modo usa `cambiar_personalidad(modo)`."

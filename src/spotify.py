@@ -1,5 +1,8 @@
 import time
+import traceback
+import requests
 import spotipy
+import urllib3
 from spotipy.oauth2 import SpotifyOAuth
 import config
 
@@ -12,16 +15,39 @@ DEVICE_HINTS = ["raspotify", "cuantico"]
 _sp = None
 _device_id = None
 _last_error = ""
+_spotify_available = False
+_spotify_init_attempted = False
 
 
-def inicializar():
-    global _sp, _last_error
+def _log(msg: str):
+    print(f"[Spotify] {msg}")
+
+
+def _deshabilitar(reason: str, exc: Exception | None = None):
+    global _sp, _device_id, _last_error, _spotify_available
+    _sp = None
+    _device_id = None
+    _spotify_available = False
+    _last_error = reason
+    _log(f"Error durante la inicialización: {reason}")
+    if exc is not None:
+        detalle = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        if detalle.strip():
+            print(detalle, end="" if detalle.endswith("\n") else "\n")
+    _log("Spotify deshabilitado. El asistente continuará sin este servicio.")
+
+
+def inicializar(origen: str = "startup") -> bool:
+    global _sp, _last_error, _spotify_available, _spotify_init_attempted
+    _spotify_init_attempted = True
+    _log("Inicializando...")
     # Spotify opcional
     if not config.SPOTIFY_ENABLED:
-        print("🎵 Spotify deshabilitado")
+        _log("Spotify deshabilitado en configuración.")
         _sp = None
+        _spotify_available = False
         _last_error = "Spotify está deshabilitado en .env"
-        return
+        return False
 
     try:
         auth = SpotifyOAuth(
@@ -32,33 +58,57 @@ def inicializar():
             open_browser=False,
             cache_path=".spotify_cache",
         )
-        _sp = spotipy.Spotify(auth_manager=auth)
+        _sp = spotipy.Spotify(
+            auth_manager=auth,
+            requests_timeout=5,
+            retries=0,
+            status_retries=0,
+            backoff_factor=0,
+        )
         _sp.current_user()  # fuerza la validación del token
-        print("🎵 Dispositivos Spotify visibles:")
-        # En el arranque damos varios intentos por si Raspotify aún está negociando.
-        _refrescar_dispositivo(verboso=True, reintentos=4, espera=3)
-        if _device_id:
-            print(f"🎵 Cuántico usará: {_device_id[:8]}…")
-        else:
-            print(f"⚠️ Ningún dispositivo coincide con {DEVICE_HINTS}. Ajusta DEVICE_HINTS en spotify.py con el nombre real que veas arriba.")
+        _spotify_available = True
         _last_error = ""
+        _log("Inicializado correctamente.")
+        print("ðŸŽµ Dispositivos Spotify visibles:")
+        if origen == "startup":
+            _refrescar_dispositivo(verboso=True, reintentos=1, espera=0)
+        else:
+            _refrescar_dispositivo(verboso=True, reintentos=2, espera=2)
+        if _device_id:
+            _log(f"Cuántico usará: {_device_id[:8]}…")
+        else:
+            _log(f"Ningún dispositivo coincide con {DEVICE_HINTS}. Spotify quedó inicializado pero sin device visible.")
+        return True
+    except spotipy.exceptions.SpotifyException as e:
+        if getattr(e, "http_status", None) == 429:
+            _deshabilitar("Rate limit (HTTP 429) durante la inicialización", e)
+        else:
+            _deshabilitar(f"SpotifyException durante la inicialización: {e}", e)
+    except (
+        requests.exceptions.Timeout,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.RequestException,
+        urllib3.exceptions.HTTPError,
+        urllib3.exceptions.MaxRetryError,
+        urllib3.exceptions.NewConnectionError,
+        TimeoutError,
+    ) as e:
+        _deshabilitar("error de red durante la inicialización", e)
     except Exception as e:
-        print(f"⚠️ Spotify no disponible: {e}")
-        _sp = None
-        _last_error = str(e)
+        _deshabilitar("fallo inesperado durante la inicialización", e)
+    return False
 
 
 def asegurar_inicializado() -> bool:
-    if _sp:
+    if _spotify_available and _sp:
         return True
-    inicializar()
-    return _sp is not None
+    return inicializar(origen="on-demand")
 
 
 def disponible_para_backend() -> tuple[bool, str]:
     if not config.SPOTIFY_ENABLED:
         return False, "Spotify está deshabilitado en .env"
-    if not asegurar_inicializado():
+    if not _spotify_available or _sp is None:
         detalle = _last_error or "Spotify no inicializa correctamente"
         return False, f"Spotify no inicializa correctamente: {detalle}"
     return True, "ok"
@@ -99,7 +149,7 @@ def _estado_playback():
     try:
         return _sp.current_playback()
     except Exception as e:
-        print(f"⚠️ Spotify error leyendo playback actual: {e}")
+        _log(f"error leyendo playback actual: {e}")
         return None
 
 
@@ -118,9 +168,9 @@ def _resolver_kwargs_device_id() -> dict:
 
 
 def disponible_para_reproducir() -> tuple[bool, str]:
-    ok, motivo = disponible_para_backend()
-    if not ok:
-        return False, motivo
+    if not asegurar_inicializado():
+        detalle = _last_error or "Spotify no inicializa correctamente"
+        return False, f"Spotify no disponible: {detalle}"
     _refrescar_dispositivo()
     return True, "ok"
 
@@ -129,6 +179,8 @@ def resumen_estado() -> dict:
     return {
         "enabled": config.SPOTIFY_ENABLED,
         "initialized": _sp is not None,
+        "available": _spotify_available,
+        "init_attempted": _spotify_init_attempted,
         "device_id": _device_id,
         "device_hints": DEVICE_HINTS[:],
         "last_error": _last_error,
@@ -136,6 +188,14 @@ def resumen_estado() -> dict:
 
 
 def estado_reproduccion() -> dict:
+    if not _spotify_available or not _sp:
+        return {
+            "backend": "spotify",
+            "active": False,
+            "paused": False,
+            "reason": "spotify-unavailable",
+            "error": _last_error,
+        }
     estado = _estado_playback()
     if not isinstance(estado, dict):
         return {
@@ -163,13 +223,13 @@ def hay_reproduccion_activa() -> bool:
 def reanudar() -> bool:
     ok, motivo = disponible_para_reproducir()
     if not ok:
-        print(f"   ⚠️ {motivo}")
+        _log(motivo)
         return False
     try:
         _sp.start_playback(**_resolver_kwargs_device_id())
         return True
     except Exception as e:
-        print(f"⚠️ Spotify error reanudar: {e}")
+        _log(f"error reanudar: {e}")
         return False
 
 
@@ -185,7 +245,7 @@ def pausar_para_conversacion() -> bool:
 def reproducir(query=None):
     ok, motivo = disponible_para_reproducir()
     if not ok:
-        print(f"   ⚠️ {motivo}")
+        _log(motivo)
         return False
     _refrescar_dispositivo(verboso=True)
     kwargs_device = _resolver_kwargs_device_id()
@@ -223,7 +283,7 @@ def reproducir(query=None):
                 print(f"   🎵 {len(items)} tracks genéricos cargados.")
         return True
     except Exception as e:
-        print(f"⚠️ Spotify error play: {e}")
+        _log(f"error play: {e}")
         return False
 
 
@@ -231,7 +291,7 @@ def reproducir_playlist(query):
     """Busca tracks que casen con `query` (género/ambiente) y los reproduce como cola."""
     ok, motivo = disponible_para_reproducir()
     if not ok:
-        print(f"   ⚠️ {motivo}")
+        _log(motivo)
         return False
     _refrescar_dispositivo()
     kwargs_device = _resolver_kwargs_device_id()
@@ -261,43 +321,46 @@ def reproducir_playlist(query):
         print(f"   🎧 {len(track_uris)} tracks cargados para '{query}'")
         return True
     except Exception as e:
-        print(f"⚠️ Spotify error playlist: {e}")
+        _log(f"error playlist: {e}")
         return False
 
 
 def pausar():
     ok, _ = disponible_para_reproducir()
     if not ok:
+        _log("Spotify no disponible.")
         return False
     try:
         _sp.pause_playback(**_resolver_kwargs_device_id())
         return True
     except Exception as e:
-        print(f"⚠️ Spotify error pausa: {e}")
+        _log(f"error pausa: {e}")
         return False
 
 
 def siguiente():
     ok, _ = disponible_para_reproducir()
     if not ok:
+        _log("Spotify no disponible.")
         return False
     try:
         _sp.next_track(**_resolver_kwargs_device_id())
         return True
     except Exception as e:
-        print(f"⚠️ Spotify error siguiente: {e}")
+        _log(f"error siguiente: {e}")
         return False
 
 
 def anterior():
     ok, _ = disponible_para_reproducir()
     if not ok:
+        _log("Spotify no disponible.")
         return False
     try:
         _sp.previous_track(**_resolver_kwargs_device_id())
         return True
     except Exception as e:
-        print(f"⚠️ Spotify error anterior: {e}")
+        _log(f"error anterior: {e}")
         return False
 
 
@@ -305,6 +368,7 @@ def volumen(delta):
     """delta: entero positivo para subir, negativo para bajar."""
     ok, _ = disponible_para_reproducir()
     if not ok:
+        _log("Spotify no disponible.")
         return False
     try:
         estado = _estado_playback()
@@ -316,5 +380,5 @@ def volumen(delta):
         print(f"   🔉 Volumen Spotify: {actual}% → {nuevo}%")
         return True
     except Exception as e:
-        print(f"⚠️ Spotify error volumen: {e}")
+        _log(f"error volumen: {e}")
         return False
