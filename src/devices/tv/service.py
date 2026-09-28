@@ -201,5 +201,5 @@ def launch_app(app_name: str, selector: str = "") -> TVCommandResult:
     return _execute(selector, "launch_app", app_name)
 
 
-def send_key(key: str, selector: str = "") -> TVCommandResult:
-    return _execute(selector, "send_key", key)
+def send_key(key: str, selector: str = "", times: int = 1) -> TVCommandResult:
+    return _execute(selector, "send_key", key, max(1, int(times)))

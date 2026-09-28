@@ -118,7 +118,7 @@ class TVController(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def send_key(self, key: str) -> TVCommandResult:
+    async def send_key(self, key: str, times: int = 1) -> TVCommandResult:
         raise NotImplementedError
 
     @abstractmethod

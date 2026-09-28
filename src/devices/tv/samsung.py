@@ -54,6 +54,9 @@ _APP_ALIASES = {
 }
 
 _KEY_ALIASES = {
+    "power": "KEY_POWER",
+    "encender": "KEY_POWER",
+    "apagar": "KEY_POWER",
     "home": "KEY_HOME",
     "atras": "KEY_RETURN",
     "back": "KEY_RETURN",
@@ -64,6 +67,19 @@ _KEY_ALIASES = {
     "izquierda": "KEY_LEFT",
     "derecha": "KEY_RIGHT",
     "mute": "KEY_MUTE",
+    "unmute": "KEY_MUTE",
+    "play": "KEY_PLAY",
+    "pause": "KEY_PLAY",
+    "pausa": "KEY_PLAY",
+    "reanudar": "KEY_PLAY",
+    "resume": "KEY_PLAY",
+    "stop": "KEY_STOP",
+    "adelantar": "KEY_FF",
+    "forward": "KEY_FF",
+    "ff": "KEY_FF",
+    "atrasar": "KEY_REWIND",
+    "rewind": "KEY_REWIND",
+    "rebobinar": "KEY_REWIND",
     "source": "KEY_SOURCE",
     "hdmi": "KEY_HDMI",
     "hdmi1": "KEY_HDMI1",
@@ -399,17 +415,37 @@ class SamsungTVController(TVController):
 
     async def power_on(self):
         try:
-            await asyncio.to_thread(_send_magic_packet, self.device.mac)
-            return ok_result("paquete Wake-on-LAN enviado", device=self.device.to_dict())
+            if self.device.mac:
+                await asyncio.to_thread(_send_magic_packet, self.device.mac)
+                return ok_result("encendido solicitado", via="wol", device=self.device.to_dict())
+        except Exception:
+            pass
+        try:
+            payload = await asyncio.to_thread(_fetch_device_info, self.device.host)
+            info = _extract_device_info(payload)
+            self.device.connected = True
+            self.device.last_seen = _now_iso()
+            self.device.model = info["model"] or self.device.model
+            self.device.mac = info["mac"] or self.device.mac
+            return ok_result("el TV ya parecía online", via="status", device=self.device.to_dict())
+        except Exception:
+            pass
+        try:
+            await self._send_key("KEY_POWER")
+            return ok_result("encendido solicitado", via="key_power", device=self.device.to_dict())
         except Exception as exc:
             return error_result(str(exc), device=self.device.to_dict())
 
     async def power_off(self):
         try:
-            await self._send_key("KEY_POWEROFF")
-            return ok_result("apagado solicitado", device=self.device.to_dict())
-        except Exception as exc:
-            return error_result(str(exc), device=self.device.to_dict())
+            await self._send_key("KEY_POWER")
+            return ok_result("apagado solicitado", via="key_power", device=self.device.to_dict())
+        except Exception as first_exc:
+            try:
+                await self._send_key("KEY_POWEROFF")
+                return ok_result("apagado solicitado", via="key_poweroff", device=self.device.to_dict())
+            except Exception as exc:
+                return error_result(str(exc or first_exc), device=self.device.to_dict())
 
     async def volume_up(self):
         try:
@@ -475,16 +511,17 @@ class SamsungTVController(TVController):
                 continue
         return error_result(f"no pude abrir {app_name} en el TV Samsung", device=self.device.to_dict())
 
-    async def send_key(self, key: str):
+    async def send_key(self, key: str, times: int = 1):
         raw = str(key or "").strip()
         resolved = _KEY_ALIASES.get(raw.lower(), raw.upper())
         if not resolved.startswith("KEY_"):
             resolved = f"KEY_{resolved}"
         try:
-            await self._send_key(resolved)
-            return ok_result("tecla enviada", key=resolved, device=self.device.to_dict())
+            repeats = max(1, int(times))
+            await self._send_key(resolved, times=repeats)
+            return ok_result("tecla enviada", key=resolved, times=repeats, device=self.device.to_dict())
         except Exception as exc:
-            return error_result(str(exc), key=resolved, device=self.device.to_dict())
+            return error_result(str(exc), key=resolved, times=max(1, int(times)), device=self.device.to_dict())
 
     async def get_status(self):
         try:

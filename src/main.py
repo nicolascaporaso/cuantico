@@ -428,6 +428,11 @@ def _tv_result_text(resultado, ok_default: str = "ok") -> str:
     return f"fallo: {resultado.message or 'error desconocido'}"
 
 
+def _tv_skip_steps(segundos: int) -> int:
+    value = max(1, int(segundos or 10))
+    return max(1, round(value / 10))
+
+
 def buscar_tvs() -> str:
     """Busca televisores compatibles en la red local. Úsala cuando nico pida escanear, descubrir o buscar TVs Samsung/Tizen nuevas."""
     resultado = tv_devices.discover()
@@ -563,7 +568,7 @@ def cambiar_entrada_tv(entrada: str, tv: str = "") -> str:
 
 
 def ir_home_tv(tv: str = "") -> str:
-    """Lleva el TV a Home."""
+    """Lleva el TV a Home. Úsala cuando nico diga 'andá al home' o 'salí al inicio'."""
     return _tv_result_text(tv_devices.send_key("home", tv))
 
 
@@ -595,6 +600,43 @@ def enviar_tecla_tv(key: str, tv: str = "") -> str:
         tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
     """
     return _tv_result_text(tv_devices.send_key(key, tv))
+
+
+def pausar_tv(tv: str = "") -> str:
+    """Pausa o alterna reproducción en el TV. Úsala para frases como 'pausá la tele', 'pausa' o 'frená eso'."""
+    return _tv_result_text(tv_devices.send_key("pause", tv))
+
+
+def reproducir_tv(tv: str = "") -> str:
+    """Reanuda o inicia reproducción en el TV. Úsala para frases como 'dale play', 'seguí' o 'reanuda la tele'."""
+    return _tv_result_text(tv_devices.send_key("play", tv))
+
+
+def detener_tv(tv: str = "") -> str:
+    """Detiene la reproducción actual en el TV."""
+    return _tv_result_text(tv_devices.send_key("stop", tv))
+
+
+def adelantar_tv(segundos: int = 10, tv: str = "") -> str:
+    """Adelanta la reproducción del TV. Usa segundos aproximados; en Samsung normalmente un click equivale a un salto corto.
+
+    Args:
+        segundos: Segundos aproximados a adelantar. Por defecto 10.
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    pasos = _tv_skip_steps(segundos)
+    return _tv_result_text(tv_devices.send_key("adelantar", tv, times=pasos))
+
+
+def atrasar_tv(segundos: int = 10, tv: str = "") -> str:
+    """Atrasa la reproducción del TV. Usa segundos aproximados; en Samsung normalmente un click equivale a un salto corto.
+
+    Args:
+        segundos: Segundos aproximados a atrasar. Por defecto 10.
+        tv: Nombre, IP o MAC del TV. Déjalo vacío para el TV por defecto.
+    """
+    pasos = _tv_skip_steps(segundos)
+    return _tv_result_text(tv_devices.send_key("atrasar", tv, times=pasos))
 
 # Cola de acciones de música: se encolan durante la tool-call y se ejecutan
 # DESPUÉS del TTS para que el comentario burlón no se solape con la canción.
@@ -1690,7 +1732,7 @@ TOOLS = [
     encender_tv, apagar_tv, subir_volumen_tv, bajar_volumen_tv,
     fijar_volumen_tv, silenciar_tv, activar_sonido_tv, abrir_app_tv,
     cambiar_entrada_tv, ir_home_tv, atras_tv, aceptar_tv, mover_tv,
-    enviar_tecla_tv,
+    enviar_tecla_tv, pausar_tv, reproducir_tv, detener_tv, adelantar_tv, atrasar_tv,
     apagar_cuantico, reiniciar_cuantico,
     reproducir_musica, poner_playlist, reanudar_musica, pausar_musica,
     siguiente_cancion, cancion_anterior, cambiar_volumen,
